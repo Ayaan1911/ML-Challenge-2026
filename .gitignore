@@ -1,0 +1,7 @@
+dataset/
+output/
+.venv/
+__pycache__/
+*.pyc
+data/cache/
+.pytest_cache/
