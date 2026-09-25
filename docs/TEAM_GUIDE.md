@@ -2,7 +2,7 @@ Amazon ML Challenge 2026
 
 **Team Build Guide: Business Entity Resolution**
 
-Shared context for MA, AM and RA and for their AI assistants. Version 1,
+Shared context for MA, AM and RA and for their AI assistants. Version 1.1 (changes: docs/GUIDE_UPDATES.md),
 Friday 25 Sept 2026. Deadline: Sunday 27 Sept 2026, 11:59 PM IST.
 
 0\. How to use this document
@@ -525,7 +525,7 @@ matching still works.
 
 5.3 src/features.py (owner RA)
 
-> """src/features.py - owner RA. Imports allowed: stdlib, numpy,
+> """src/features.py - owner RA. Imports allowed: stdlib, numpy, pandas,
 > rapidfuzz."""
 >
 > from rapidfuzz import fuzz
@@ -557,6 +557,36 @@ matching still works.
 >
 > """Same as calling pair_features on zip(a_list, b_list). Simple loop
 > is fine."""
+>
+> \# Added in interface v1.1 (see docs/GUIDE_UPDATES.md). Imports
+> allowed now also include pandas.
+>
+> def pair_features_frame(a: pd.DataFrame, b: pd.DataFrame) -\>
+> pd.DataFrame:
+>
+> """a, b = row-aligned DataFrames whose columns are the NormRecord keys
+> (row i of a
+>
+> is paired with row i of b, by position). Returns a DataFrame with
+> len(a) rows and
+>
+> float32 columns named exactly FEATURE_NAMES, in order, with the SAME
+> values as
+>
+> pair_features on each row pair (tolerance 1e-5), including the -1.0
+> rule.
+>
+> Must be vectorized: rapidfuzz.process.cpdist(..., workers=-1) for
+> string scores
+>
+> plus numpy for the rest. No Python loop per row. Target: at least 1M
+> pairs per
+>
+> minute on a laptop. pair_features stays as the per-pair reference
+> implementation."""
+>
+> MA's tests/test_interface.py checks the names, the parity on 1,000
+> random pairs and the speed.
 
 Table 5.5: Features (in this exact order)
 

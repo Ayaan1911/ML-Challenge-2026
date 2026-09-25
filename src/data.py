@@ -1,5 +1,8 @@
 """Load the competition TSVs. First load of each file writes a parquet cache under data/cache/."""
 import csv
+import ctypes
+import ctypes.wintypes as wt
+import os
 
 import pandas as pd
 
@@ -40,6 +43,26 @@ def load_truth() -> dict[str, set[str]]:
     gt = load_truth_df()
     return {s1: set(filter(None, m.split(","))) for s1, m in
             zip(gt["source1_entity_id"].tolist(), gt["matched_entity_ids"].tolist())}
+
+
+def peak_rss_mb() -> float:
+    """Peak working set of this process (Windows via psapi, else ru_maxrss)."""
+    if os.name == "nt":
+        class PMC(ctypes.Structure):
+            _fields_ = [("cb", wt.DWORD), ("PageFaultCount", wt.DWORD)] + [
+                (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize",
+                                               "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                                               "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage",
+                                               "PagefileUsage", "PeakPagefileUsage")]
+        pmc = PMC(cb=ctypes.sizeof(PMC))
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = wt.HANDLE
+        gpmi = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+        gpmi.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD]
+        gpmi(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb)
+        return pmc.PeakWorkingSetSize / 2**20
+    import resource
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
 def _count_lines(path: Path) -> int:
