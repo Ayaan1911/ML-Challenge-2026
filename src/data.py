@@ -4,7 +4,10 @@ import ctypes
 import ctypes.wintypes as wt
 import os
 
+import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
 
 from pathlib import Path
 
@@ -45,6 +48,25 @@ def load_truth() -> dict[str, set[str]]:
             zip(gt["source1_entity_id"].tolist(), gt["matched_entity_ids"].tolist())}
 
 
+def id_key(ids) -> np.ndarray:
+    """'S2-158121477' -> 2 * 10**12 + 158121477 (int64). Every id in the data is S<1-3>-<digits>, <= 12 chars
+    (checked in Pass 4), so keys are unique and joins can use sorted int arrays instead of string hashes."""
+    a = pa.array(ids) if not isinstance(ids, (pa.Array, pa.ChunkedArray)) else ids
+    src = pc.cast(pc.utf8_slice_codeunits(a, 1, 2), pa.int64()).to_numpy(zero_copy_only=False)
+    num = pc.cast(pc.utf8_slice_codeunits(a, 3), pa.int64()).to_numpy(zero_copy_only=False)
+    if len(num) and (num.max() >= 10**12 or src.min() < 1 or src.max() > 3):
+        raise ValueError("unexpected entity id format")
+    return src * 10**12 + num
+
+
+def key_id(keys: np.ndarray) -> pa.Array:
+    """Inverse of id_key."""
+    keys = np.asarray(keys, dtype=np.int64)
+    src = pc.cast(pa.array(keys // 10**12), pa.string())
+    num = pc.cast(pa.array(keys % 10**12), pa.string())
+    return pc.binary_join_element_wise("S", src, "-", num, "")
+
+
 def peak_rss_mb() -> float:
     """Peak working set of this process (Windows via psapi, else ru_maxrss)."""
     if os.name == "nt":
@@ -63,6 +85,40 @@ def peak_rss_mb() -> float:
         return pmc.PeakWorkingSetSize / 2**20
     import resource
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+
+def available_mb() -> float:
+    """System-wide available physical memory (Task Manager "Available")."""
+    if os.name == "nt":
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", wt.DWORD), ("dwMemoryLoad", wt.DWORD)] + [
+                (n, ctypes.c_ulonglong) for n in ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile",
+                                                  "ullAvailPageFile", "ullTotalVirtual", "ullAvailVirtual",
+                                                  "ullAvailExtendedVirtual")]
+        ms = MS(dwLength=ctypes.sizeof(MS))
+        ctypes.WinDLL("kernel32").GlobalMemoryStatusEx(ctypes.byref(ms))
+        return ms.ullAvailPhys / 2**20
+    with open("/proc/meminfo") as f:
+        return next(int(line.split()[1]) for line in f if line.startswith("MemAvailable")) / 1024
+
+
+def start_memory_guard(floor_mb: float = 800, every_s: float = 2.0) -> None:
+    """Exit the process (code 3) if available memory drops below floor_mb. Every output in this repo is
+    written to a .tmp file and renamed, so an exit never leaves a half-written file behind."""
+    import sys
+    import threading
+    import time
+
+    def watch():
+        while True:
+            avail = available_mb()
+            if avail < floor_mb:
+                print(f"MEMORY GUARD: available {avail:,.0f} MB < {floor_mb:,.0f} MB, stopping "
+                      f"(process peak {peak_rss_mb():,.0f} MB)", file=sys.stderr, flush=True)
+                os._exit(3)
+            time.sleep(every_s)
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def _count_lines(path: Path) -> int:

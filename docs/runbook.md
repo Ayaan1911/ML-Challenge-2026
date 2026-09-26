@@ -72,3 +72,35 @@ import pandas as pd
 val = pd.read_parquet("data/cache/cands_val.parquet")  # columns: label, keep (= survives pruning), weight
 val = val[val["keep"]]
 ```
+
+## 4. Matcher, decision layer and submission (Pass 4)
+
+No train sample: the model trains on half of the **pruned validation candidate set** and is evaluated on the
+other half. `src/valsplit.py` splits by query record (a record keeps all its candidates): val S1 ids are shuffled
+into halves A and B (seed 42); records of A S1s train, records of B S1s evaluate, and the sampled other records
+are split 50/50 (seed 42). Macro F0.5 is scored over the half-B S1 ids only. Every command starts an in-process
+memory guard that exits cleanly (code 3) when available memory drops below 800 MB; all outputs are written to
+`.tmp` and renamed, so a stopped run leaves nothing half-written.
+
+| Command | What it does | Time | Peak memory |
+|---|---|---|---|
+| `python -m src.valsplit` | Split lists -> `data/splits/valsplit_*` and pruned, side-tagged val parts -> `data/cache/val_pruned/` (7.95M train-side, 7.91M eval-side pairs) | 38 s | 1.3 GB |
+| `python -m src.matcher features val` | Pair, blocking and context features for the 15.9M pruned val pairs -> `data/cache/feats_val/` | 3.6 min | 3.4 GB |
+| `python -m src.matcher train` | LightGBM on the train side (early stopping on 10% of its records) -> `models/lgbm.txt`, `docs/feature_importance.md` | 7 min | 4.7 GB |
+| `python -m src.postprocess sweep` | Scores the eval side, sweeps t, picks it on corrected F0.5 -> `models/threshold.json`, `docs/matcher_report.md` | 4 min (30 s when predictions are cached) | 3.8 GB |
+| `python -m src.postprocess errors` | 3,000 false positives + 3,000 false negatives at the chosen t -> `docs/errors_val.csv` | 30 s | 3.8 GB |
+| `python -m src.run_pipeline test` | Pruned test candidates -> features -> model -> decision -> `output/matching_results.tsv`, `output/candidate_pairs.tsv` | 33 min (31.7 features + scoring, 0.5 decision, 0.5 writing) | 4.8 GB |
+| `python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/_none.tsv --test-dir dataset/test [--check-ids]` | Organizer validator on the matching file | 11 s / 25 s | 1.5 / 2.4 GB |
+| `python -m src.check_candidates [--check-ids]` | Same rules for `candidate_pairs.tsv`, streamed (see below) | 21 s / 41 s | 1.2 / 2.1 GB |
+
+The organizer validator with `--candidate output/candidate_pairs.tsv` holds all ~47M candidate ids in Python sets
+and passed 7.5 GB before the memory guard stopped it, so on a 16 GB laptop validate the candidate file with
+`src.check_candidates` instead. The validator falls back to `output/candidate_pairs.tsv` whenever that file
+exists, so pass a path that does not exist to skip it.
+
+Memory notes: `matcher train` peaks while building the LightGBM datasets (4.7 GB for 7.2M rows x 55 features);
+lower `NEG_RATE` in `src/matcher.py` if more features push it over. The test run holds the norm records of one
+country at a time; India is the largest.
+
+After merging a new `normalize.py`: `norm_cache`, then the blocking runs of section 3, then this whole section.
+After a new `features.py` only: this section from `matcher features val` onwards.
