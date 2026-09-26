@@ -7,6 +7,7 @@ Writes output/matching_results.tsv (one row per test S1, empty list = no match) 
 Run: python -m src.run_pipeline test
 """
 import argparse
+import hashlib
 import json
 import time
 
@@ -16,12 +17,13 @@ import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
-from src.data import ROOT, id_key, key_id, peak_rss_mb, start_memory_guard
-from src.matcher import iter_features, load_model, log, predict
+from src.data import CACHE, ROOT, id_key, key_id, peak_rss_mb, start_memory_guard
+from src.matcher import MODEL_PATH, iter_features, load_model, log, predict
 from src.norm_cache import norm_path
 from src.postprocess import THRESHOLD_PATH, decide
 
 OUT = ROOT / "output"
+PRED = CACHE / "pred_test"
 BLOCK = 100_000  # S1 rows per write batch
 
 
@@ -45,17 +47,36 @@ def write_grouped(path, header: list[str], s1_all: np.ndarray, pair_s1: np.ndarr
     tmp.replace(path)
 
 
+def prepare_pred_dir() -> frozenset[str]:
+    """Part predictions already on disk are reused only if the model, features.py and normalize.py are unchanged."""
+    h = hashlib.sha256()
+    for f in (MODEL_PATH, ROOT / "src" / "features.py", ROOT / "src" / "normalize.py"):
+        h.update(f.read_bytes())
+    tag = PRED / "_inputs_sha256.txt"
+    PRED.mkdir(parents=True, exist_ok=True)
+    if not tag.exists() or tag.read_text() != h.hexdigest():
+        for old in PRED.glob("*.parquet"):
+            old.unlink()
+        tag.write_text(h.hexdigest())
+    return frozenset(p.name for p in PRED.glob("*.parquet"))
+
+
 def run_test() -> dict:
     stages, t0 = {}, time.perf_counter()
     t = json.loads(THRESHOLD_PATH.read_text())["t"]
     booster = load_model()
-    s1k, rk, prob = [], [], []
-    for p, df, f in iter_features("test"):
-        s1k.append(id_key(df["s1_id"].to_numpy(object)))
-        rk.append(id_key(df["cand_id"].to_numpy(object)))
-        prob.append(predict(booster, f))
+    done = prepare_pred_dir()
+    if done:
+        log(f"resuming: {len(done)} parts already scored with this model and these modules")
+    for p, df, f in iter_features("test", skip=done):  # predictions go to disk, not memory, while norm tables are held
+        tmp = PRED / f"{p.stem}.tmp"
+        pq.write_table(pa.table({"s1": id_key(df["s1_id"].to_numpy(object)), "rec": id_key(df["cand_id"].to_numpy(object)),
+                                 "prob": predict(booster, f)}), tmp)
+        tmp.replace(PRED / p.name)
         log(f"scored {p.name}: {len(df):,} pairs")
-    s1k, rk, prob = np.concatenate(s1k), np.concatenate(rk), np.concatenate(prob)
+    pred = pa.concat_tables(pq.read_table(p) for p in sorted(PRED.glob("*.parquet")))
+    s1k, rk, prob = (pred[c].to_numpy() for c in ("s1", "rec", "prob"))
+    del pred
     stages["features_and_scoring"] = {"s": round(time.perf_counter() - t0, 1), "peak_mb": round(peak_rss_mb())}
 
     t1 = time.perf_counter()

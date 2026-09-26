@@ -14,7 +14,7 @@ from multiprocessing import Pool
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.data import CACHE, ROOT, peak_rss_mb, read_tsv, tsv_path
+from src.data import CACHE, ROOT, peak_rss_mb, read_tsv, start_memory_guard, tsv_path
 
 CHUNK = 50_000
 WORKERS = max(1, (os.cpu_count() or 2) - 1)
@@ -81,9 +81,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("splits", nargs="+", choices=["dev", "train", "test"])
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--workers", type=int, default=WORKERS, help="fewer workers = less memory (~180 MB each)")
     args = ap.parse_args()
+    start_memory_guard()
     CACHE.mkdir(parents=True, exist_ok=True)
-    with Pool(WORKERS) as pool:
+    with Pool(args.workers) as pool:
         for split in args.splits:
             for source in SOURCES:
                 if not args.force and is_fresh(split, source):

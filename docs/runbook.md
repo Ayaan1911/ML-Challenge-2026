@@ -29,7 +29,7 @@ python -m pytest -q                       REM ~5 s
 | Command | What it does | Time | Peak memory |
 |---|---|---|---|
 | `python -m src.norm_cache dev` | Normalizes the dev slice | ~1 min | ~2.4 GB + workers |
-| `python -m src.norm_cache train test` | All six files -> `data/cache/norm_{split}_{source}.parquet` | ~4.2 min | ~2.7 GB + ~2.7 GB in 15 workers |
+| `python -m src.norm_cache train test --workers 6` | All six files -> `data/cache/norm_{split}_{source}.parquet` (AM's normalize.py, Pass 5) | 1.8 min | 2.9 GB + 1.2 GB in 6 workers |
 
 A file is rebuilt only when `src/normalize.py` has changed, so **after merging AM's normalize.py,
 rerun `python -m src.norm_cache dev train test`** and then every blocking step below.
@@ -79,17 +79,18 @@ No train sample: the model trains on half of the **pruned validation candidate s
 other half. `src/valsplit.py` splits by query record (a record keeps all its candidates): val S1 ids are shuffled
 into halves A and B (seed 42); records of A S1s train, records of B S1s evaluate, and the sampled other records
 are split 50/50 (seed 42). Macro F0.5 is scored over the half-B S1 ids only. Every command starts an in-process
-memory guard that exits cleanly (code 3) when available memory drops below 800 MB; all outputs are written to
+memory guard that exits cleanly (code 3) when available memory drops below 1,500 MB (raised from 800 MB in Pass 5 so it
+stops a job before Claude Code's own low-memory stop does); all outputs are written to
 `.tmp` and renamed, so a stopped run leaves nothing half-written.
 
 | Command | What it does | Time | Peak memory |
 |---|---|---|---|
 | `python -m src.valsplit` | Split lists -> `data/splits/valsplit_*` and pruned, side-tagged val parts -> `data/cache/val_pruned/` (7.95M train-side, 7.91M eval-side pairs) | 38 s | 1.3 GB |
-| `python -m src.matcher features val` | Pair, blocking and context features for the 15.9M pruned val pairs -> `data/cache/feats_val/` | 3.6 min | 3.4 GB |
-| `python -m src.matcher train` | LightGBM on the train side (early stopping on 10% of its records) -> `models/lgbm.txt`, `docs/feature_importance.md` | 7 min | 4.7 GB |
-| `python -m src.postprocess sweep` | Scores the eval side, sweeps t, picks it on corrected F0.5 -> `models/threshold.json`, `docs/matcher_report.md` | 4 min (30 s when predictions are cached) | 3.8 GB |
-| `python -m src.postprocess errors` | 3,000 false positives + 3,000 false negatives at the chosen t -> `docs/errors_val.csv` | 30 s | 3.8 GB |
-| `python -m src.run_pipeline test` | Pruned test candidates -> features -> model -> decision -> `output/matching_results.tsv`, `output/candidate_pairs.tsv` | 33 min (31.7 features + scoring, 0.5 decision, 0.5 writing) | 4.8 GB |
+| `python -m src.matcher features val` | Pair, blocking and context features for the 15.9M pruned val pairs -> `data/cache/feats_val/` | 14.1 min (RA's 27 features; 3.6 min with the Pass 4 stub) | 4.0 GB |
+| `python -m src.matcher train` | LightGBM on the train side, negatives subsampled at `NEG_RATE` = 0.5 (early stopping on 10% of its records, not subsampled) -> `models/lgbm.txt`, `docs/feature_importance.md` | 5.6 min | 3.8 GB |
+| `python -m src.postprocess sweep` | Scores the eval side, sweeps t, picks it on corrected F0.5 -> `models/threshold.json`, `docs/matcher_report.md` | 4.6 min (30 s when predictions are cached) | 3.7 GB |
+| `python -m src.postprocess errors` | Up to 3,000 false positives + 3,000 false negatives at the chosen t -> `docs/errors_val.csv` (Pass 5: all 2,407 FPs) | 30 s | 3.8 GB |
+| `python -m src.run_pipeline test` | Pruned test candidates -> features -> model -> decision -> `output/matching_results.tsv`, `output/candidate_pairs.tsv`. Resumable: per-part predictions in `data/cache/pred_test/` are reused while the model, features.py and normalize.py are unchanged | ~65 min with RA's features (3 runs: France 8.5, India 1-20 28, rest 28.1; decision 0.5, writing 0.5); 33 min with the Pass 4 stub | 3.7 GB (norm records loaded 8 parts at a time, `NORM_GROUP`); 4.7 GB when a whole country was loaded |
 | `python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/_none.tsv --test-dir dataset/test [--check-ids]` | Organizer validator on the matching file | 11 s / 25 s | 1.5 / 2.4 GB |
 | `python -m src.check_candidates [--check-ids]` | Same rules for `candidate_pairs.tsv`, streamed (see below) | 21 s / 41 s | 1.2 / 2.1 GB |
 
@@ -98,8 +99,9 @@ and passed 7.5 GB before the memory guard stopped it, so on a 16 GB laptop valid
 `src.check_candidates` instead. The validator falls back to `output/candidate_pairs.tsv` whenever that file
 exists, so pass a path that does not exist to skip it.
 
-Memory notes: `matcher train` peaks while building the LightGBM datasets (4.7 GB for 7.2M rows x 55 features);
-lower `NEG_RATE` in `src/matcher.py` if more features push it over. The test run holds the norm records of one
+Memory notes: `matcher train` peaks while building the LightGBM datasets. With all negatives (Pass 4, 7.2M rows x 55
+features) that was 4.7 GB and was stopped once for low memory; `NEG_RATE` = 0.5 (4.1M rows, Pass 5) peaks at 3.8 GB.
+Subsampling shifts the predicted probabilities up, which the threshold sweep absorbs (t = 0.79 in Pass 5). The test run holds the norm records of one
 country at a time; India is the largest.
 
 After merging a new `normalize.py`: `norm_cache`, then the blocking runs of section 3, then this whole section.

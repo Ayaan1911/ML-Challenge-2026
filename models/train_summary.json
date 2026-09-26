@@ -1,10 +1,10 @@
 {
- "best_iteration": 2999,
- "holdout_logloss": 0.03147549425482394,
- "train_rows": 7153399,
+ "best_iteration": 2998,
+ "holdout_logloss": 0.020815959773498625,
+ "train_rows": 4133396,
  "holdout_rows": 796166,
- "neg_rate": 1.0,
- "runtime_s": 420.9,
- "peak_mb": 4664,
+ "neg_rate": 0.5,
+ "runtime_s": 331.4,
+ "peak_mb": 3839,
  "model_mb": 20.1
 }
