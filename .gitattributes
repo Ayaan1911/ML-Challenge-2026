@@ -1,0 +1,2 @@
+# LightGBM model files must keep LF line endings: core.autocrlf rewrote them to CRLF and LightGBM cannot parse that
+models/*.txt -text
