@@ -42,7 +42,7 @@ META_COLS = ["s1_id", "cand_id", "country", "label", "weight", "query_group", "s
 PARAMS = {"objective": "binary", "num_leaves": 63, "learning_rate": 0.05, "min_data_in_leaf": 100,
           "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 1, "lambda_l2": 1.0,
           "verbose": -1, "seed": 42}
-NEG_RATE = 1.0  # negatives kept for training; 1.0 = no subsampling (fits in memory, see docs/runbook.md)
+NEG_RATE = 0.5  # share of negatives kept for training (Pass 5: 0.5 keeps the dataset build near 3 GB, see docs/runbook.md)
 
 
 def log(msg: str) -> None:
@@ -165,15 +165,20 @@ def featurize(df: pd.DataFrame, s1_norm: NormTable, rec_norm: NormTable, s1_ctx:
     return f[MODEL_FEATURES].astype(np.float32)
 
 
-def iter_features(kind: str):
-    """Yields (path, part frame, feature frame) for every part, country by country."""
+def iter_features(kind: str, skip: frozenset[str] = frozenset()):
+    """Yields (path, part frame, feature frame) for every part, country by country. Parts named in skip are not
+    featurized, but still count in their country's S1 context (it needs every pair pointing at an S1)."""
     split = {"val": "train", "test": "test"}[kind]
     by_country: dict[str, list[Path]] = {}
     for p in part_paths(kind):
         by_country.setdefault(part_country(p), []).append(p)
     for country, cps in by_country.items():
+        if all(p.name in skip for p in cps):
+            log(f"{kind} {country}: all {len(cps)} parts already done, skipped")
+            continue
         ctx = dict(zip(cps, s1_context(kind, cps)))  # per country: an S1 only has candidates of its country
         log(f"{kind} {country}: S1 context for {len(cps)} parts")
+        cps = [p for p in cps if p.name not in skip]
         s1k, rk = [], []
         for p in cps:
             t = pq.read_table(p, columns=["s1_id", "cand_id"])

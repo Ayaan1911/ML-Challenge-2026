@@ -102,7 +102,7 @@ def available_mb() -> float:
         return next(int(line.split()[1]) for line in f if line.startswith("MemAvailable")) / 1024
 
 
-def start_memory_guard(floor_mb: float = 800, every_s: float = 2.0) -> None:
+def start_memory_guard(floor_mb: float = 1500, every_s: float = 2.0) -> None:
     """Exit the process (code 3) if available memory drops below floor_mb. Every output in this repo is
     written to a .tmp file and renamed, so an exit never leaves a half-written file behind."""
     import sys
