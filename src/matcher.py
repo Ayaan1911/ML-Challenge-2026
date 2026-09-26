@@ -43,6 +43,7 @@ PARAMS = {"objective": "binary", "num_leaves": 63, "learning_rate": 0.05, "min_d
           "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 1, "lambda_l2": 1.0,
           "verbose": -1, "seed": 42}
 NORM_GROUP = 8  # parts whose norm records are held at once (Pass 5: a whole country peaked at 4.7 GB)
+MAX_ROUNDS = 6000  # Pass 7: Pass 5 hit the old 3,000 cap still improving; early stopping after 100 flat rounds
 NEG_RATE = 0.5  # share of negatives kept for training (Pass 5: 0.5 keeps the dataset build near 3 GB, see docs/runbook.md)
 
 
@@ -240,7 +241,7 @@ def train() -> None:
     del x
     log("datasets built")
     evals: dict = {}
-    booster = lgb.train(PARAMS, dtr, num_boost_round=3000, valid_sets=[dva], valid_names=["holdout"],
+    booster = lgb.train(PARAMS, dtr, num_boost_round=MAX_ROUNDS, valid_sets=[dva], valid_names=["holdout"],
                         callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(100),
                                    lgb.record_evaluation(evals)])
     MODELS.mkdir(exist_ok=True)

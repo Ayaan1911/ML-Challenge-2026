@@ -24,7 +24,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.blocking import CONFIG, prune_mask, prune_score, run, ALL_KEYS, PRUNE
+from src.blocking import CONFIG, PRUNE, always_key_hit, prune_mask, prune_score, run
 from src.data import CACHE, load_truth_df
 from src.norm_cache import norm_path
 from src.split import load_split
@@ -71,7 +71,7 @@ def label(name: str, weighted: set[str], weight: float) -> dict:
             c = pd.read_parquet(part).merge(truth, on="cand_id", how="left")
             c["label"] = (c["true_s1"] == c["s1_id"]).astype(np.int8)
             rec = pd.factorize(c["cand_id"])[0]
-            c["keep"] = prune_mask(rec, (c[ALL_KEYS].to_numpy() > 0).any(axis=1), prune_score(c),
+            c["keep"] = prune_mask(rec, always_key_hit(c), prune_score(c),
                                    PRUNE["n"], PRUNE["floor"])  # the rows the model will score
             other = c["cand_id"].isin(weighted)
             c["query_group"] = np.where(other, "other_sampled", "target")

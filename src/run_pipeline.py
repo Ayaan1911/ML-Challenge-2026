@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
@@ -61,7 +62,7 @@ def prepare_pred_dir() -> frozenset[str]:
     return frozenset(p.name for p in PRED.glob("*.parquet"))
 
 
-def run_test() -> dict:
+def run_test(out_dir=OUT) -> dict:
     stages, t0 = {}, time.perf_counter()
     t = json.loads(THRESHOLD_PATH.read_text())["t"]
     booster = load_model()
@@ -87,9 +88,9 @@ def run_test() -> dict:
     stages["decision"] = {"s": round(time.perf_counter() - t1, 1), "peak_mb": round(peak_rss_mb())}
 
     t2 = time.perf_counter()
-    OUT.mkdir(exist_ok=True)
-    write_grouped(OUT / "matching_results.tsv", ["source1_entity_id", "matched_entity_ids"], s1_all, s1k[sel], rk[sel])
-    write_grouped(OUT / "candidate_pairs.tsv", ["source1_entity_id", "candidate_entity_ids"], s1_all, s1k, rk)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_grouped(out_dir / "matching_results.tsv", ["source1_entity_id", "matched_entity_ids"], s1_all, s1k[sel], rk[sel])
+    write_grouped(out_dir / "candidate_pairs.tsv", ["source1_entity_id", "candidate_entity_ids"], s1_all, s1k, rk)
     stages["write_tsv"] = {"s": round(time.perf_counter() - t2, 1), "peak_mb": round(peak_rss_mb())}
 
     matched_s1 = np.unique(s1k[sel])
@@ -98,9 +99,9 @@ def run_test() -> dict:
                "records_matched": int(sel.sum()), "records_scored": len(np.unique(rk)),
                "runtime_min": round((time.perf_counter() - t0) / 60, 1), "peak_mb": round(peak_rss_mb()),
                "stages": stages,
-               "matching_results_mb": round((OUT / "matching_results.tsv").stat().st_size / 2**20, 1),
-               "candidate_pairs_mb": round((OUT / "candidate_pairs.tsv").stat().st_size / 2**20, 1)}
-    (OUT / "run_summary.json").write_text(json.dumps(summary, indent=1))
+               "matching_results_mb": round((out_dir / "matching_results.tsv").stat().st_size / 2**20, 1),
+               "candidate_pairs_mb": round((out_dir / "candidate_pairs.tsv").stat().st_size / 2**20, 1)}
+    (out_dir / "run_summary.json").write_text(json.dumps(summary, indent=1))
     log(json.dumps(summary))
     return summary
 
@@ -108,9 +109,10 @@ def run_test() -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("split", choices=["test"])
-    ap.parse_args()
+    ap.add_argument("--out-dir", default=str(OUT), help="write the TSVs here (stage them before replacing output/)")
+    args = ap.parse_args()
     start_memory_guard()
-    run_test()
+    run_test(Path(args.out_dir))
 
 
 if __name__ == "__main__":

@@ -55,10 +55,18 @@ CONFIG = {
     "prune_floor": 0.0,
     "chunk": 200_000,        # query records per part file
     "n_features": 2 ** 20,   # hashing space (char 3-grams); words use 2**22
-    "threads": max(1, (os.cpu_count() or 2) - 1),
+    "new_keys": ["key_anchor", "key_skip_bigram", "key_prefix8"],  # Pass 7 channels (AM's blocker)
+    "new_key_cap": 20,       # skip a new-channel key held by more S1 records than this
+    "rescore_all": True,     # true TF-IDF cosines for every merged pair, so new-channel hits can compete in pruning
+    "threads": min(6, max(1, (os.cpu_count() or 2) - 1)),  # Pass 7: 6 workers (memory); topk is bandwidth bound
 }
 PRUNE = {"n": 3, "floor": 0.0}  # tuned on real-density val queries, see docs/blocking_report.md
-ALL_KEYS = ["key_name_nospace", "key_sorted_tokens", "key_postcode_num", "key_postcode", "key_word_postcode"]
+ALWAYS_KEYS = ["key_name_nospace", "key_sorted_tokens", "key_postcode_num", "key_postcode", "key_word_postcode"]
+NEW_KEYS = ["key_anchor", "key_skip_bigram", "key_prefix8"]
+ALL_KEYS = ALWAYS_KEYS + NEW_KEYS  # hits of ALWAYS_KEYS survive pruning; NEW_KEYS hits compete on prune_score
+_STOP = frozenset({"the", "and", "inc", "llc", "ltd", "corp", "co", "pvt", "llp", "services", "service", "group",
+                   "holdings", "enterprises", "center", "centre", "store", "shop", "mart", "restaurant", "cafe",
+                   "hotel", "inn", "auto", "food", "market", "solutions", "management", "international"})
 SCORES = ["tfidf_name_cos", "tfidf_nameaddr_cos", "addr_word_idf"]
 OUT_SCHEMA = pa.schema([("s1_id", pa.string()), ("cand_id", pa.string()), ("country", pa.string())]
                        + [(f, pa.int8()) for f in ALL_KEYS] + [(c, pa.float32()) for c in SCORES])
@@ -73,20 +81,54 @@ def timed(stage: str):
     _timings[stage] = _timings.get(stage, 0.0) + time.perf_counter() - t
 
 
-def load_norm(split: str, sources: tuple[str, ...]) -> pd.DataFrame:
-    """Blocking columns from the normalization cache, plus the single-valued exact keys."""
+def load_norm(split: str, sources: tuple[str, ...], country: str | None = None) -> pd.DataFrame:
+    """Blocking columns from the normalization cache, plus the single-valued exact keys. country: one country only."""
     cols = ["entity_id", "country_norm", "name_core", "addr_core", "postcode", "numbers"]
     frames = []
     for s in sources:
-        df = pq.read_table(norm_path(split, s), columns=cols).to_pandas()
+        flt = [("country_norm", "=", country)] if country is not None else None
+        df = pq.read_table(norm_path(split, s), columns=cols, filters=flt).to_pandas()
         first = np.array([n[0] if len(n) else "" for n in df.pop("numbers")], dtype=object)
         pc = df["postcode"].to_numpy(object)
         df["key_postcode_num"] = np.where((pc != "") & (first != ""), pc + "|" + first, "")
+        df["num_first"] = np.where(np.char.str_len(first.astype(str)) <= 5, first, "")  # AM: 1-5 digit house number
         frames.append(df)
     df = pd.concat(frames, ignore_index=True)
-    return df.assign(key_name_nospace=df["name_core"].str.replace(" ", "", regex=False),
+    nospace = df["name_core"].str.replace(" ", "", regex=False)
+    return df.assign(key_name_nospace=nospace,  # = the transliterated, space-collapsed core (Pass 7 normalize)
                      key_sorted_tokens=[" ".join(sorted(x.split())) for x in df["name_core"].tolist()],
-                     key_postcode=df["postcode"])
+                     key_postcode=df["postcode"],
+                     key_prefix8=nospace.str[:8].where(nospace.str.len() >= 5, ""))
+
+
+def anchor_keys(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """AM's address anchors: house number + first 3 letters of the name; postcode + first 3 letters."""
+    p3 = df["name_core"].str.replace(" ", "", regex=False).str[:3].to_numpy(object)
+    ok3 = np.array([len(x) >= 2 for x in p3])
+    num, pc = df["num_first"].to_numpy(object), df["postcode"].to_numpy(object)
+    k1 = np.where(ok3 & (num != ""), "n|" + num + "|" + p3, "")
+    k2 = np.where(ok3 & (pc != ""), "z|" + pc + "|" + p3, "")
+    idx = np.arange(len(df))
+    keys, labels = np.concatenate([k1, k2]).astype(object), np.concatenate([idx, idx])
+    ok = keys != ""
+    return keys[ok], labels[ok]
+
+
+def skip_bigram_keys(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """AM's skip-bigrams: token pairs at distance 1-2 among the first 4 distinctive name tokens (>= 3 chars)."""
+    keys, labels = [], []
+    for i, core in enumerate(df["name_core"].tolist()):
+        t = [w for w in core.split() if len(w) >= 3 and w not in _STOP]
+        for a in range(min(len(t), 4)):
+            for b in range(a + 1, min(len(t), a + 3)):
+                keys.append(t[a] + " " + t[b])
+                labels.append(i)
+    return np.array(keys, dtype=object), np.array(labels, dtype=np.int64)
+
+
+def always_key_hit(df: pd.DataFrame) -> np.ndarray:
+    """Rows found by a key that always survives pruning (the Pass 3 keys, not the Pass 7 channels)."""
+    return (df[[k for k in ALWAYS_KEYS if k in df]].to_numpy() > 0).any(axis=1)
 
 
 def word_postcode_keys(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -97,6 +139,9 @@ def word_postcode_keys(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     w_np = w.to_numpy(object)
     ok = ((w.str.len() >= 3) | w.str.isdigit()).to_numpy(bool) & (w_np != pc)
     return (w_np[ok] + "|" + pc[ok]).astype(object), w.index.to_numpy()[ok]
+
+
+MULTI_KEYS = {"key_word_postcode": word_postcode_keys, "key_anchor": anchor_keys, "key_skip_bigram": skip_bigram_keys}
 
 
 class KeyIndex:
@@ -219,8 +264,7 @@ def prune(df: pd.DataFrame, n=None, floor=None) -> pd.DataFrame:
     n = PRUNE["n"] if n is None else n
     floor = PRUNE["floor"] if floor is None else floor
     rec = pd.factorize(df["cand_id"])[0]
-    has_key = (df[ALL_KEYS].to_numpy() > 0).any(axis=1)
-    return df[prune_mask(rec, has_key, prune_score(df), n, floor)]
+    return df[prune_mask(rec, always_key_hit(df), prune_score(df), n, floor)]
 
 
 def prune_mask(rec: np.ndarray, has_key: np.ndarray, score: np.ndarray, n, floor: float) -> np.ndarray:
@@ -241,10 +285,11 @@ class CountryBlocker:
         self.s1_ids = pa.array(s1["entity_id"].tolist())
         own = np.arange(len(s1))
         with timed("s1_keys"):
-            self.keys = {f: KeyIndex(s1[f].to_numpy(object), own, cfg["block_cap"])
-                         for f in cfg["keys"] if f != "key_word_postcode"}
-            if "key_word_postcode" in cfg["keys"]:
-                self.keys["key_word_postcode"] = KeyIndex(*word_postcode_keys(s1), cfg["block_cap"])
+            self.keys = {}
+            for f in cfg["keys"] + cfg.get("new_keys", []):
+                cap = cfg["block_cap"] if f in ALWAYS_KEYS else cfg["new_key_cap"]
+                self.keys[f] = (KeyIndex(*MULTI_KEYS[f](s1), cap) if f in MULTI_KEYS
+                                else KeyIndex(s1[f].to_numpy(object), own, cap))
         with timed("s1_index"):
             nameaddr = (s1["name_core"] + " " + s1["addr_core"]).str.strip().tolist()
             trigram = cfg["addr_mode"] == "trigram"
@@ -258,14 +303,15 @@ class CountryBlocker:
         ridx = np.arange(len(rec))
         with timed("keys"):
             for f, index in self.keys.items():
-                if f == "key_word_postcode":
-                    keys, labels = word_postcode_keys(rec)
+                if f in MULTI_KEYS:
+                    keys, labels = MULTI_KEYS[f](rec)
                 else:
                     keys, labels = rec[f].to_numpy(object), ridx
                 r, s = index.lookup(keys, labels)
                 parts.append((r, s, f, np.ones(len(r), dtype=np.float32)))
         with timed("name_tfidf"):
-            r, s, v = self.name.topk(self.name.vectorize(rec["name_core"].tolist()), cfg["k_name"])
+            qn = self.name.vectorize(rec["name_core"].tolist())
+            r, s, v = self.name.topk(qn, cfg["k_name"])
             parts.append((r, s, "tfidf_name_cos", v))
         with timed("addr_retriever"):
             texts = (rec["name_core"] + " " + rec["addr_core"]).str.strip().tolist()
@@ -278,17 +324,20 @@ class CountryBlocker:
                 v = self.nameaddr.cosine(q, r, s)
             parts.append((r, s, "tfidf_nameaddr_cos", v))
         with timed("dedup_prune"):
-            return self._merge(parts, rec)
+            return self._merge(parts, rec, qn, q)
 
-    def _merge(self, parts: list, rec: pd.DataFrame) -> pd.DataFrame:
+    def _merge(self, parts: list, rec: pd.DataFrame, qn=None, qa=None) -> pd.DataFrame:
         n1 = self.n1
         key = np.concatenate([p[0].astype(np.int64) * n1 + p[1] for p in parts])
         g = pd.DataFrame({c: np.concatenate([p[3] if p[2] == c else np.zeros(len(p[0]), np.float32)
                                              for p in parts]) for c in ALL_KEYS + SCORES})
         g = g.groupby(key, sort=False).max()
         r, s = g.index.to_numpy() // n1, g.index.to_numpy() % n1
-        keep = prune_mask(r, (g[ALL_KEYS].to_numpy() > 0).any(axis=1), prune_score(g),
-                          self.cfg["prune_n"], self.cfg["prune_floor"])
+        if self.cfg.get("rescore_all") and qn is not None:  # true cosines for every pair, in slices (memory)
+            for c, idx, q in (("tfidf_name_cos", self.name, qn), ("tfidf_nameaddr_cos", self.nameaddr, qa)):
+                g[c] = np.concatenate([np.zeros(0, np.float32)] + [idx.cosine(q, r[i:i + 500_000], s[i:i + 500_000])
+                                                                   for i in range(0, len(r), 500_000)])
+        keep = prune_mask(r, always_key_hit(g), prune_score(g), self.cfg["prune_n"], self.cfg["prune_floor"])
         out = g[keep].reset_index(drop=True)
         out[ALL_KEYS] = out[ALL_KEYS].astype(np.int8)
         out.insert(0, "cand_id", rec["entity_id"].to_numpy(object)[r[keep]])
@@ -335,20 +384,31 @@ def run(split: str, cfg: dict, name: str, queries: set | None = None, sample_rec
     _prepare_outdir(outdir, cfg, fresh)
     with timed("load"):
         s1 = load_norm(split, ("source1",))
-        rec = load_norm(split, ("source2", "source3"))
-    n_rec_all = len(rec)
-    if queries is not None:
-        rec = rec[rec["entity_id"].isin(queries)]
-    if sample_records:
-        rec = rec.sample(n=min(sample_records, len(rec)), random_state=42)
-    by_country = {c: g.reset_index(drop=True) for c, g in rec.groupby("country_norm", sort=True)}
+        counts = pd.concat([pq.read_table(norm_path(split, src), columns=["country_norm"]).to_pandas()
+                            for src in ("source2", "source3")])["country_norm"].value_counts()
+    n_rec_all = int(counts.sum())
     s1_by_country = {c: g.reset_index(drop=True) for c, g in s1.groupby("country_norm", sort=True)}
-    prog = Progress(name, sum(len(g) for c, g in by_country.items() if c in s1_by_country))
-    prog.log(f"start split={split} S1={len(s1):,} queries={len(rec):,} config={json.dumps(cfg)}")
+    if sample_records:  # calibration only: sample across all countries, so load every record once
+        rec = load_norm(split, ("source2", "source3"))
+        rec = rec[rec["entity_id"].isin(queries)] if queries is not None else rec
+        rec = rec.sample(n=min(sample_records, len(rec)), random_state=42)
+        loaded = {c: g.reset_index(drop=True) for c, g in rec.groupby("country_norm", sort=True)}
+        countries, total = sorted(loaded), len(rec)
+    else:  # query records are loaded one country at a time (memory)
+        loaded, countries = None, sorted(counts.index)
+        total = len(queries) if queries is not None else int(counts.sum())
+    prog = Progress(name, total)
+    prog.log(f"start split={split} S1={len(s1):,} queries={total:,} config={json.dumps(cfg)}")
     with Parallel(n_jobs=cfg["threads"]) as par:
-        for country, rec_c in by_country.items():
+        for country in countries:
             if country not in s1_by_country:
                 continue  # no S1 with this country string -> no candidates (EDA: pairs share the country)
+            if loaded is not None:
+                rec_c = loaded[country]
+            else:
+                rec_c = load_norm(split, ("source2", "source3"), country)
+                if queries is not None:
+                    rec_c = rec_c[rec_c["entity_id"].isin(queries)].reset_index(drop=True)
             chunks = [(i, lo) for i, lo in enumerate(range(0, len(rec_c), cfg["chunk"]))]
             todo = [(i, lo) for i, lo in chunks if not (outdir / f"{_slug(country)}-{i:04d}.parquet").exists()]
             prog.log(f"{country}: {len(chunks) - len(todo)} of {len(chunks)} chunks already done",
@@ -367,7 +427,7 @@ def run(split: str, cfg: dict, name: str, queries: set | None = None, sample_rec
                     os.replace(path.with_suffix(".tmp"), path)
                 prog.log(f"{country} chunk {i + 1}/{len(chunks)}: {len(out):,} pairs", records=len(part))
     pairs = sum(pq.ParquetFile(p).metadata.num_rows for p in outdir.glob("*.parquet"))
-    stats = {"split": split, "name": name, "n_s1": len(s1), "n_rec": len(rec), "n_rec_all": n_rec_all,
+    stats = {"split": split, "name": name, "n_s1": len(s1), "n_rec": total, "n_rec_all": n_rec_all,
              "pairs": pairs, "runtime_s": round(time.perf_counter() - t0, 1), "peak_mb": round(peak_rss_mb()),
              "stages_s": {k: round(v, 1) for k, v in _timings.items()}, "out": str(outdir)}
     prog.log(f"done: {json.dumps(stats)}")

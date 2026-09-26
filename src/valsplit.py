@@ -21,6 +21,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from src.blocking import PRUNE, always_key_hit, prune_mask, prune_score
 from src.data import CACHE, id_key, key_id, load_truth_df, peak_rss_mb, start_memory_guard
 from src.split import SPLITS, load_split
 
@@ -68,6 +69,26 @@ def isin_sorted(x: np.ndarray, sorted_ref: np.ndarray) -> np.ndarray:
     return (sorted_ref[i] == x) if len(sorted_ref) else np.zeros(len(x), bool)
 
 
+def with_keep(df: pd.DataFrame) -> np.ndarray:
+    """Rows that survive read-time pruning with the CURRENT PRUNE settings (the stored 'keep' may be older)."""
+    rec = pd.factorize(df["cand_id"])[0]
+    return prune_mask(rec, always_key_hit(df), prune_score(df), PRUNE["n"], PRUNE["floor"])
+
+
+def split_others(others: np.ndarray) -> np.ndarray:
+    """Eval half of the sampled other records. Records already assigned by an earlier split keep their side, so
+    eval sets stay comparable across passes; new ones are split 50/50 by a seeded shuffle."""
+    prev_eval, prev_train = (SPLITS / "valsplit_eval_other_records.txt"), (SPLITS / "valsplit_train_other_records.txt")
+    if not prev_eval.exists():
+        perm = np.random.default_rng(SEED).permutation(len(others))
+        return np.sort(others[perm[: int(len(others) * OTHER_EVAL_FRAC)]])
+    old_eval = np.sort(id_key(prev_eval.read_text(encoding="utf-8").split()))
+    old = np.union1d(old_eval, id_key(prev_train.read_text(encoding="utf-8").split()))
+    new = np.setdiff1d(others, old)
+    perm = np.random.default_rng(SEED).permutation(len(new))
+    return np.sort(np.union1d(np.intersect1d(others, old_eval), new[perm[: int(len(new) * OTHER_EVAL_FRAC)]]))
+
+
 def main() -> None:
     start_memory_guard()
     t0 = time.perf_counter()
@@ -75,14 +96,13 @@ def main() -> None:
     parts = part_row_groups(f)
     a_ids, b_ids = halves()
     a_recs, b_recs = true_s1_in(a_ids), true_s1_in(b_ids)
-    others = []  # pass 1: every sampled other record that survives pruning
-    for i in range(f.metadata.num_row_groups):
-        t = f.read_row_group(i, columns=["cand_id", "query_group", "keep"])
-        t = t.filter(pc.and_(t["keep"], pc.equal(t["query_group"], "other_sampled")))
-        others.append(np.unique(id_key(t["cand_id"])))
+    others = []  # pass 1: every sampled other record that survives pruning (recomputed with the current PRUNE)
+    for groups in parts:
+        t = f.read_row_groups(groups).to_pandas()
+        t = t[with_keep(t) & (t["query_group"] == "other_sampled")]
+        others.append(np.unique(id_key(t["cand_id"].tolist())))
     others = np.unique(np.concatenate(others))
-    perm = np.random.default_rng(SEED).permutation(len(others))
-    other_eval = np.sort(others[perm[: int(len(others) * OTHER_EVAL_FRAC)]])
+    other_eval = split_others(others)
 
     SPLITS.mkdir(parents=True, exist_ok=True)
     for name, ids in (("A_s1_ids", a_ids), ("B_s1_ids", b_ids)):
@@ -96,7 +116,7 @@ def main() -> None:
     stats = {"train": [0, 0, set()], "eval": [0, 0, set()]}  # pairs, positives, records
     for n, groups in enumerate(parts):
         t = f.read_row_groups(groups)
-        t = t.filter(t["keep"]).drop_columns(["keep"])
+        t = t.filter(pa.array(with_keep(t.to_pandas()))).drop_columns(["keep"])
         k = id_key(t["cand_id"])
         other = pc.equal(t["query_group"], "other_sampled").to_numpy(zero_copy_only=False)
         in_a, in_b = isin_sorted(k, a_recs), isin_sorted(k, b_recs)

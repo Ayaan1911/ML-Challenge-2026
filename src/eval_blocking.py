@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from src.blocking import ALL_KEYS, SCORES, prune, prune_mask, prune_score, read_cands
+from src.blocking import ALL_KEYS, SCORES, always_key_hit, prune, prune_mask, prune_score, read_cands
 from src.data import CACHE, ROOT, load_truth_df
 from src.dev_slice import load_dev
 from src.metric import macro_f05
@@ -105,7 +105,7 @@ def rankings(c: pd.DataFrame) -> dict[str, np.ndarray]:
 def dev_prune_sweep(c: pd.DataFrame, pairs: pd.DataFrame, truth: dict, dev_s1: list[str],
                     n_pool: int) -> pd.DataFrame:
     rec = pd.factorize(c["cand_id"])[0]
-    has_key = (c[ALL_KEYS].to_numpy() > 0).any(axis=1)
+    has_key = always_key_hit(c)
     rows = []
     for name, sc in rankings(c).items():
         for n in PRUNE_NS:
@@ -125,7 +125,7 @@ def val_analysis() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     lab = c["label"].to_numpy().astype(bool) & c["s1_id"].isin(val).to_numpy()
     rec = pd.factorize(c["cand_id"])[0]
     n_rec = int(rec.max()) + 1
-    has_key = (c[ALL_KEYS].to_numpy() > 0).any(axis=1)
+    has_key = always_key_hit(c)
     rows = [{"ranking": "none (unpruned)", "prune_n": "-", "pair_recall": lab.sum() / n_true,
              "pairs_per_record": len(c) / n_rec}]
     for name, sc in rankings(c).items():
