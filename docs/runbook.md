@@ -48,12 +48,12 @@ mix parts built with different configs.
 | Command | What it does | Time | Peak memory |
 |---|---|---|---|
 | `python -m src.blocking dev --fresh` | Dev slice candidates -> `data/cache/cands_dev/` | ~1 min | ~2 GB |
-| `python -m src.eval_blocking` | Dev variants, calibration, pruning sweeps, real-density val analysis -> `docs/blocking_report.md` (needs the three runs below for its last sections) | ~20 min | ~6 GB |
-| `python -m src.blocking test` | **Test candidates** -> `data/cache/cands_test/` | ~34 min | ~5 GB |
-| `python -m src.candsets val` | Val-matched records + 20% of other records against the full train S1 index, labelled -> `data/cache/cands_val.parquet` | ~20 min | ~5 GB |
-| `python -m src.candsets trainsample --train-frac 0.7` | 70% of train-matched and never-matched records against the full train S1 index, labelled -> `data/cache/cands_trainsample.parquet` | ~35 min | ~5-6 GB |
+| `python -m src.eval_blocking` | Dev variants, calibration, pruning sweeps, real-density val analysis -> `docs/blocking_report.md` (needs the three runs below for its last sections). The dev tables are superseded by the real-density section | ~20 min | ~6 GB |
+| `python -m src.blocking test` | **Test candidates** -> `data/cache/cands_test/` (99.4M stored pairs; ~4.8 per record after pruning) | 22 min measured (33 min on a hot laptop) | 5.2 GB |
+| `python -m src.candsets val` | Val-matched records + 20% of other records against the full train S1 index, labelled -> `data/cache/cands_val.parquet` (33.3M pairs, 15.9M after pruning) | 18 min blocking + ~8 min labelling | 5.4 GB |
+| `python -m src.candsets trainsample --train-frac 0.7` | 70% of train-matched and never-matched records against the full train S1 index, labelled -> `data/cache/cands_trainsample.parquet` | ~27 min blocking + ~10 min labelling | ~5-6 GB |
 
-Run them one at a time. The top-k search is memory-bandwidth bound, so two jobs slow each other
+Run them one at a time, with at least ~8 GB of memory available (Task Manager, "Available") and sleep disabled. The top-k search is memory-bandwidth bound, so two jobs slow each other
 down more than they gain. All three full runs back to back:
 
 ```
