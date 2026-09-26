@@ -42,6 +42,7 @@ META_COLS = ["s1_id", "cand_id", "country", "label", "weight", "query_group", "s
 PARAMS = {"objective": "binary", "num_leaves": 63, "learning_rate": 0.05, "min_data_in_leaf": 100,
           "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 1, "lambda_l2": 1.0,
           "verbose": -1, "seed": 42}
+NORM_GROUP = 8  # parts whose norm records are held at once (Pass 5: a whole country peaked at 4.7 GB)
 NEG_RATE = 0.5  # share of negatives kept for training (Pass 5: 0.5 keeps the dataset build near 3 GB, see docs/runbook.md)
 
 
@@ -178,19 +179,22 @@ def iter_features(kind: str, skip: frozenset[str] = frozenset()):
             continue
         ctx = dict(zip(cps, s1_context(kind, cps)))  # per country: an S1 only has candidates of its country
         log(f"{kind} {country}: S1 context for {len(cps)} parts")
-        cps = [p for p in cps if p.name not in skip]
-        s1k, rk = [], []
-        for p in cps:
-            t = pq.read_table(p, columns=["s1_id", "cand_id"])
-            s1k.append(np.unique(id_key(t["s1_id"])))
-            rk.append(np.unique(id_key(t["cand_id"])))
-        s1_norm = NormTable(split, ("source1",), np.concatenate(s1k))
-        rec_norm = NormTable(split, ("source2", "source3"), np.concatenate(rk))
-        log(f"{kind} {country}: norm records loaded ({len(s1_norm.keys):,} S1, {len(rec_norm.keys):,} records)")
-        for p in cps:
-            df = read_part(kind, p)
-            yield p, df, featurize(df, s1_norm, rec_norm, ctx.pop(p))
-        del s1_norm, rec_norm
+        todo = [p for p in cps if p.name not in skip]
+        for g in range(0, len(todo), NORM_GROUP):  # norm records for a group of parts at a time (memory)
+            group = todo[g:g + NORM_GROUP]
+            s1k, rk = [], []
+            for p in group:
+                t = pq.read_table(p, columns=["s1_id", "cand_id"])
+                s1k.append(np.unique(id_key(t["s1_id"])))
+                rk.append(np.unique(id_key(t["cand_id"])))
+            s1_norm = NormTable(split, ("source1",), np.concatenate(s1k))
+            rec_norm = NormTable(split, ("source2", "source3"), np.concatenate(rk))
+            log(f"{kind} {country}: norm records loaded for parts {g + 1}-{g + len(group)} of {len(todo)} "
+                f"({len(s1_norm.keys):,} S1, {len(rec_norm.keys):,} records)")
+            for p in group:
+                df = read_part(kind, p)
+                yield p, df, featurize(df, s1_norm, rec_norm, ctx.pop(p))
+            del s1_norm, rec_norm
 
 
 def build_val_features() -> None:

@@ -89,8 +89,8 @@ stops a job before Claude Code's own low-memory stop does); all outputs are writ
 | `python -m src.matcher features val` | Pair, blocking and context features for the 15.9M pruned val pairs -> `data/cache/feats_val/` | 14.1 min (RA's 27 features; 3.6 min with the Pass 4 stub) | 4.0 GB |
 | `python -m src.matcher train` | LightGBM on the train side, negatives subsampled at `NEG_RATE` = 0.5 (early stopping on 10% of its records, not subsampled) -> `models/lgbm.txt`, `docs/feature_importance.md` | 5.6 min | 3.8 GB |
 | `python -m src.postprocess sweep` | Scores the eval side, sweeps t, picks it on corrected F0.5 -> `models/threshold.json`, `docs/matcher_report.md` | 4.6 min (30 s when predictions are cached) | 3.7 GB |
-| `python -m src.postprocess errors` | 3,000 false positives + 3,000 false negatives at the chosen t -> `docs/errors_val.csv` | 30 s | 3.8 GB |
-| `python -m src.run_pipeline test` | Pruned test candidates -> features -> model -> decision -> `output/matching_results.tsv`, `output/candidate_pairs.tsv` | 33 min (31.7 features + scoring, 0.5 decision, 0.5 writing) | 4.8 GB |
+| `python -m src.postprocess errors` | Up to 3,000 false positives + 3,000 false negatives at the chosen t -> `docs/errors_val.csv` (Pass 5: all 2,407 FPs) | 30 s | 3.8 GB |
+| `python -m src.run_pipeline test` | Pruned test candidates -> features -> model -> decision -> `output/matching_results.tsv`, `output/candidate_pairs.tsv`. Resumable: per-part predictions in `data/cache/pred_test/` are reused while the model, features.py and normalize.py are unchanged | ~65 min with RA's features (3 runs: France 8.5, India 1-20 28, rest 28.1; decision 0.5, writing 0.5); 33 min with the Pass 4 stub | 3.7 GB (norm records loaded 8 parts at a time, `NORM_GROUP`); 4.7 GB when a whole country was loaded |
 | `python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/_none.tsv --test-dir dataset/test [--check-ids]` | Organizer validator on the matching file | 11 s / 25 s | 1.5 / 2.4 GB |
 | `python -m src.check_candidates [--check-ids]` | Same rules for `candidate_pairs.tsv`, streamed (see below) | 21 s / 41 s | 1.2 / 2.1 GB |
 
