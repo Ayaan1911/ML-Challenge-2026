@@ -5,7 +5,6 @@ Owner: MA (Adapter for AM & RA pipeline)
 import re
 from typing import Any, Dict, List
 
-# Pre-compiled high-speed regexes (Zero backtracking)
 RE_CLEAN = re.compile(r"[^\w\s]")
 RE_SPACES = re.compile(r"\s+")
 RE_NUMBERS = re.compile(r"\b\d+\b")
@@ -14,7 +13,6 @@ RE_LEGAL = re.compile(r"\b(pvt ltd|private limited|ltd|limited|llc|inc|incorpora
 def clean_text(s: Any) -> str:
     if not s or not isinstance(s, str):
         return ""
-    # 1. Lowercase & strip punctuation
     s_clean = RE_CLEAN.sub(" ", s.lower())
     return RE_SPACES.sub(" ", s_clean).strip()
 
@@ -22,7 +20,8 @@ def normalize_record(record: dict) -> dict:
     raw_id = str(record.get("entity_id", ""))
     name_norm = clean_text(record.get("business_name") or record.get("name", ""))
     addr_norm = clean_text(record.get("business_address") or record.get("address", ""))
-    country_norm = clean_text(record.get("country", ""))
+    country_raw = str(record.get("country", "")).strip()
+    country_norm = clean_text(country_raw)
 
     # 1. Fast DBA split
     dba_name = ""
@@ -47,12 +46,14 @@ def normalize_record(record: dict) -> dict:
             postcode = n
             break
 
-    # 4. Numbers without postcode
     numbers_core = [n for n in numbers if n != postcode]
 
     return {
         "entity_id": raw_id,
-        "country_norm": country_norm,
+        "country": country_raw.upper(),           # Legacy Phase 1 key
+        "country_norm": country_norm,             # RA's schema key
+        "business_name": name_norm,               # Legacy Phase 1 key
+        "business_address": addr_norm,            # Legacy Phase 1 key
         "name_norm": name_norm,
         "name_core": name_core,
         "legal_suffix": legal_suffix,
