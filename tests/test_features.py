@@ -84,8 +84,8 @@ ALL_EMPTY = {
 
 
 def test_feature_names_order_and_count():
-    """Verify exactly 27 feature names matching Table 5.5."""
-    assert len(FEATURE_NAMES) == 27
+    """Verify the 27 Table 5.5 names in order; MA (Pass 7) appended 5 more after them."""
+    assert len(FEATURE_NAMES) == 32
     expected_order = [
         "name_ratio",
         "name_token_sort",
@@ -115,7 +115,9 @@ def test_feature_names_order_and_count():
         "name_in_addr",
         "missing_count",
     ]
-    assert FEATURE_NAMES == expected_order
+    assert FEATURE_NAMES[:27] == expected_order
+    assert FEATURE_NAMES[27:] == ["house_number_conflict", "disjoint_brand_words", "branch_modifier_asymmetry",
+                                  "name_exact_missing_addr", "core_nospace_ratio"]
 
 
 def test_keys_present_and_all_floats():
@@ -152,6 +154,8 @@ def test_value_ranges():
         for k, v in feats.items():
             if k == "missing_count":
                 assert 0.0 <= v <= 6.0, f"missing_count out of range: {v}"
+            elif k == "disjoint_brand_words":  # MA, Pass 7: a word count, -1.0 when a core is empty
+                assert v == -1.0 or v >= 0.0, f"disjoint_brand_words out of range: {v}"
             else:
                 assert -1.0 <= v <= 1.0, f"Feature {k} out of [-1, 1] range: {v}"
 

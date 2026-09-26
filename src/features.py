@@ -32,7 +32,54 @@ FEATURE_NAMES: list[str] = [
     "country_match",
     "name_in_addr",
     "missing_count",
+    # Pass 7 additions (appended; never reorder)
+    "house_number_conflict",
+    "disjoint_brand_words",
+    "branch_modifier_asymmetry",
+    "name_exact_missing_addr",
+    "core_nospace_ratio",
 ]
+
+_LEGAL_WORDS = frozenset({"inc", "corp", "co", "llc", "llp", "lp", "plc", "ltd", "pvt", "opc", "sarl", "sas", "sasu",
+                          "sa", "eurl", "snc", "sci", "scop", "and", "the"})
+_MODIFIERS = frozenset({"north", "south", "east", "west", "northside", "southside", "eastside", "westside",
+                        "lakeside", "riverside", "overseas", "branch", "division", "unit"})
+
+
+def _house_number(addr_core: str) -> str:
+    """First standalone house number: an all-digit token of 1-5 digits in addr_core (postcode already removed)."""
+    for w in addr_core.split():
+        if w.isdigit() and len(w) <= 5:
+            return w.lstrip("0") or "0"
+    return ""
+
+
+def _modifiers(name: str) -> frozenset:
+    words = name.split()
+    found = {w for w in words if w in _MODIFIERS}
+    found.update(f"local {words[i + 1]}" for i, w in enumerate(words[:-1]) if w == "local" and words[i + 1].isdigit())
+    return frozenset(found)
+
+
+def _extra_features(core_a: str, core_b: str, name_a: str, name_b: str, addr_a: str, addr_b: str,
+                    acore_a: str, acore_b: str) -> tuple[float, float, float, float, float]:
+    """The five Pass 7 features from plain strings (shared by pair_features and pair_features_frame)."""
+    ha, hb = _house_number(acore_a), _house_number(acore_b)
+    house = -1.0 if not ha or not hb else float(ha != hb)
+    if core_a and core_b:
+        place = set(addr_a.split()) | set(addr_b.split())
+        wa = {w for w in core_a.split() if w not in _LEGAL_WORDS and w not in place}
+        wb = {w for w in core_b.split() if w not in _LEGAL_WORDS and w not in place}
+        disjoint = float(len(wa ^ wb))
+        sim = fuzz.ratio(core_a, core_b) / 100.0
+        missing = float(sim >= 0.95 and (not addr_a or not addr_b))
+        ns_a, ns_b = core_a.replace(" ", ""), core_b.replace(" ", "")
+        nospace = fuzz.ratio(ns_a, ns_b) / 100.0
+    else:
+        disjoint = missing = nospace = -1.0
+    branch = -1.0 if not name_a or not name_b else float(bool(_modifiers(name_a) ^ _modifiers(name_b)))
+    return house, disjoint, branch, missing, nospace
+
 
 
 def _get_str(record: dict[str, Any], key: str) -> str:
@@ -306,6 +353,11 @@ def pair_features(a: dict, b: dict) -> dict[str, float]:
             empty_count += 1
     feats["missing_count"] = float(empty_count)
 
+    # 28-32: Pass 7 additions
+    (feats["house_number_conflict"], feats["disjoint_brand_words"], feats["branch_modifier_asymmetry"],
+     feats["name_exact_missing_addr"], feats["core_nospace_ratio"]) = _extra_features(
+        core_a, core_b, name_norm_a, name_norm_b, addr_norm_a, addr_norm_b, addr_core_a, addr_core_b)
+
     return feats
 
 
@@ -421,4 +473,7 @@ def pair_features_frame(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
         "missing_count": sum(np.array([not v for v in _fcol(r, k)], dtype=np.float64)
                              for r in (a, b) for k in ("name_core", "addr_core", "postcode")),
     }
+    extra = np.array([_extra_features(*v) for v in zip(ca, cb, na, nb, aa, ab, ra, rb)], dtype=np.float64).reshape(-1, 5)
+    for j, k in enumerate(FEATURE_NAMES[27:32]):
+        f[k] = extra[:, j]
     return pd.DataFrame({k: np.asarray(f[k], dtype=np.float32) for k in FEATURE_NAMES}, index=a.index)

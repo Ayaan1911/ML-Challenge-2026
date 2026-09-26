@@ -34,7 +34,7 @@ def test_pair_features():
     assert "name_token_sort" in feats
     assert feats["country_match"] == 1.0
     assert feats["name_token_set"] > 0.5
-    assert len(feats) == 27
+    assert len(feats) == len(FEATURE_NAMES) == 32  # MA, Pass 7: 27 + 5 appended
     for v in feats.values():
         assert isinstance(v, (int, float))
         assert not (v != v)  # Check for NaN
