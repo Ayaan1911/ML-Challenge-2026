@@ -1,3 +1,8 @@
+"""
+src/postprocess.py - High-speed inference using C++ RapidFuzz pre-score (<3 mins).
+Owner: AM (Lead)
+"""
+
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -6,21 +11,17 @@ import os
 import joblib
 import pandas as pd
 import numpy as np
+from rapidfuzz import fuzz
 from src.config import (
     TEST_DIR, OUTPUT_DIR, MODELS_DIR, PROJECT_ROOT, 
     S1_ID_COL, MATCHED_COL, CANDIDATE_COL, DELIM, ID_SEP
 )
+from src.features import pair_features, FEATURE_NAMES
+from src.normalize import normalize_record
 
-def fast_jaccard(s1, s2):
-    t1 = set(s1.lower().split())
-    t2 = set(s2.lower().split())
-    if not t1 or not t2:
-        return 0.0
-    return len(t1 & t2) / len(t1 | t2)
-
-def run_postprocessing(threshold=0.55):
+def run_postprocessing(threshold=0.55, batch_size=20000):
     print("=" * 65)
-    print("PHASE 2: ULTRA-FAST INFERENCE & POST-PROCESSING")
+    print("PHASE 2: HIGH-SPEED INFERENCE (27 FEATURES, <3 MINS)")
     print("=" * 65)
 
     model_path = MODELS_DIR / "lgbm_pair_model.pkl"
@@ -37,57 +38,85 @@ def run_postprocessing(threshold=0.55):
     s3_df = pd.read_csv(TEST_DIR / "test_source3.tsv", sep=DELIM)
     targets_df = pd.concat([s2_df, s3_df], ignore_index=True)
 
-    # 10M rows zipped into python dicts in 1.8 seconds!
     s1_name_map = dict(zip(s1_df["entity_id"].astype(str), s1_df["business_name"].fillna("").astype(str)))
     s1_addr_map = dict(zip(s1_df["entity_id"].astype(str), s1_df["business_address"].fillna("").astype(str)))
+    s1_country_map = dict(zip(s1_df["entity_id"].astype(str), s1_df["country"].fillna("").astype(str)))
 
     t_name_map = dict(zip(targets_df["entity_id"].astype(str), targets_df["business_name"].fillna("").astype(str)))
     t_addr_map = dict(zip(targets_df["entity_id"].astype(str), targets_df["business_address"].fillna("").astype(str)))
+    t_country_map = dict(zip(targets_df["entity_id"].astype(str), targets_df["country"].fillna("").astype(str)))
     print(f"Lookup maps ready: {len(s1_name_map):,} S1 | {len(t_name_map):,} Targets")
 
-    print(f"Extracting features for candidate pairs...")
     s1_ids = df_cands[S1_ID_COL].astype(str).tolist()
     cands_raw = df_cands[CANDIDATE_COL].fillna("").astype(str).tolist()
+    total = len(s1_ids)
 
+    print(f"Extracting top candidates for {total:,} queries...")
     top_cands = []
-    name_jaccards = []
-    addr_jaccards = []
-    exact_names = []
+    for c_str in cands_raw:
+        top_cands.append(c_str.split(ID_SEP)[0].strip() if c_str else "")
 
-    for q_id, c_str in zip(s1_ids, cands_raw):
-        cand_id = c_str.split(ID_SEP)[0].strip() if c_str else ""
-        top_cands.append(cand_id)
+    print("\nStage 1: RapidFuzz C++ Pre-Screening (scoring all 1.73M pairs in seconds)...")
+    indices_to_score = []
+    
+    for idx, (q_id, cand_id) in enumerate(zip(s1_ids, top_cands)):
+        if not cand_id or q_id not in s1_name_map or cand_id not in t_name_map:
+            continue
+        
+        q_n = s1_name_map[q_id]
+        c_n = t_name_map[cand_id]
 
-        if cand_id and q_id in s1_name_map and cand_id in t_name_map:
-            q_name, t_name = s1_name_map[q_id], t_name_map[cand_id]
-            q_addr, t_addr = s1_addr_map[q_id], t_addr_map[cand_id]
+        # C++ token set ratio: instant string match score
+        ratio = fuzz.token_set_ratio(q_n, c_n)
+        if ratio >= 40:
+            indices_to_score.append(idx)
 
-            nj = fast_jaccard(q_name, t_name)
-            aj = fast_jaccard(q_addr, t_addr)
-            ex = 1.0 if q_name.lower().strip() == t_name.lower().strip() and len(q_name) > 3 else 0.0
-        else:
-            nj, aj, ex = 0.0, 0.0, 0.0
+    num_candidates = len(indices_to_score)
+    print(f"✓ Pre-screening complete: {num_candidates:,} plausible candidate pairs selected!")
+    print(f"  ({total - num_candidates:,} low-similarity pairs safely assigned 0.0 probability)")
 
-        name_jaccards.append(nj)
-        addr_jaccards.append(aj)
-        exact_names.append(ex)
+    print(f"\nStage 2: Computing full 27 features for {num_candidates:,} pairs...")
+    all_probs = np.zeros(total, dtype=np.float32)
 
-    print("Running LightGBM vectorized prediction on all 1.73M candidates at once...")
-    df_feat = pd.DataFrame({
-        "name_jaccard": name_jaccards,
-        "addr_jaccard": addr_jaccards,
-        "country_match": np.ones(len(name_jaccards)),
-        "exact_name_match": exact_names
-    })
+    for i in range(0, num_candidates, batch_size):
+        end = min(i + batch_size, num_candidates)
+        batch_slice = indices_to_score[i:end]
+        
+        batch_X = []
+        for idx in batch_slice:
+            q_id = s1_ids[idx]
+            cand_id = top_cands[idx]
+            
+            q_rec = {
+                "entity_id": q_id,
+                "business_name": s1_name_map[q_id],
+                "business_address": s1_addr_map[q_id],
+                "country": s1_country_map[q_id]
+            }
+            c_rec = {
+                "entity_id": cand_id,
+                "business_name": t_name_map[cand_id],
+                "business_address": t_addr_map[cand_id],
+                "country": t_country_map[cand_id]
+            }
+            feat_dict = pair_features(normalize_record(q_rec), normalize_record(c_rec))
+            batch_X.append([feat_dict[k] for k in FEATURE_NAMES])
 
-    probs = clf.predict_proba(df_feat)[:, 1]
+        if batch_X:
+            df_batch = pd.DataFrame(batch_X, columns=FEATURE_NAMES)
+            scored = clf.predict_proba(df_batch)[:, 1]
+            for global_idx, p in zip(batch_slice, scored):
+                all_probs[global_idx] = p
 
-    print(f"Applying Macro F0.5 precision cutoff (tau >= {threshold:.2f})...")
+        pct = (end / num_candidates) * 100
+        print(f"  Scored {end:,} / {num_candidates:,} ({pct:.1f}%) candidate pairs...")
+
+    print(f"\nApplying Macro F0.5 precision cutoff (tau >= {threshold:.2f})...")
     final_matches = []
     accepted = 0
     rejected = 0
 
-    for q_id, cand_id, p in zip(s1_ids, top_cands, probs):
+    for q_id, cand_id, p in zip(s1_ids, top_cands, all_probs):
         if cand_id and p >= threshold:
             final_matches.append({S1_ID_COL: q_id, MATCHED_COL: cand_id})
             accepted += 1
