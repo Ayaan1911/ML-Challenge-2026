@@ -1,7 +1,7 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
 **Team Name:** neural forge  
-**Team Members:** [fill in: team member names]  
+**Team Members:** Aditya Malik (team leader; Apex Institute of Technology, Chandigarh University), Aryan Rajan (K L University, Guntur), Mohammad Ayaan (M S Ramaiah Institute of Technology, Bengaluru)  
 **Submission Date:** {{SUBMISSION_DATE}}  
 **Submitted variant:** `{{FINAL_VARIANT}}`. Eval F0.5, corrected: {{FINAL_EVAL}}. Public leaderboard F0.5: {{FINAL_LEADERBOARD}}.
 
@@ -21,8 +21,8 @@ four stages:
 The main contribution is **record-relative context features**: how an S1 ranks against the record's other
 candidates. They carry 82% of the model's gain and turn a pairwise classifier into a competitive assignment.
 
-The best eval score is 0.9561 corrected macro F0.5 (chain-name variant); Pass 7 scores 0.8917 on the public
-leaderboard. Everything runs on a 16 GB laptop without a GPU, external data or APIs.
+The submitted chain-name variant scores 0.9561 corrected macro F0.5 on eval and 0.897 on the public leaderboard
+(Pass 7: 0.9531 and 0.8917). Everything runs on a 16 GB laptop without a GPU, external data or APIs.
 
 ---
 
@@ -301,7 +301,7 @@ one-S1-per-record assignment. A joint study of extra decision rules (Pass 8) ado
 - **F_0.5 Score (macro):**
   - Eval corrected: 0.9531 (Pass 7), and 0.9561 with the chain-name step.
   - Eval uncorrected: 0.9563 / 0.9593.
-  - Public leaderboard: 0.8917 (Pass 7).
+  - Public leaderboard: 0.897 (chainfix, best), 0.8917 (Pass 7).
   - Final variant `{{FINAL_VARIANT}}`: leaderboard {{FINAL_LEADERBOARD}}.
 
 ### Results across passes
@@ -312,8 +312,8 @@ one-S1-per-record assignment. A joint study of extra decision rules (Pass 8) ado
 | 5 | Team normalization and 27 pair features, negatives at 0.5 | 0.9345 | 0.9302 | 0.8729 | 0.8479 |
 | 7 | Noise-hardened normalization, 5 new features, 3 new blocking channels, rescored pruning | 0.9563 | 0.9531 | 0.9109 | **0.8917** |
 | 8 | Decision-rule study (no rule adopted; output = Pass 7) | 0.9563 | 0.9531 | 0.9109 | - |
-| 8c | Chain-name candidate step (`chainfix`) | 0.9593 | 0.9561 | 0.9127 | [fill in if uploaded] |
-| 8c | `chainfix_t085` / `t085` / `t090` (stricter t) | 0.9584 / 0.9554 / 0.9536 | 0.9558 / 0.9528 / 0.9518 | - | [fill in if uploaded] |
+| 8c | Chain-name candidate step (`chainfix`) | 0.9593 | 0.9561 | 0.9127 | **{{CHAINFIX_LEADERBOARD}}** |
+| 8c | `chainfix_t085` / `t085` / `t090` (stricter t) | 0.9584 / 0.9554 / 0.9536 | 0.9558 / 0.9528 / 0.9518 | - | not submitted |
 | **final** | **`{{FINAL_VARIANT}}`** | | **{{FINAL_EVAL}}** | | **{{FINAL_LEADERBOARD}}** |
 
 Per country at Pass 7, corrected: India 0.9209, US 0.9745. With the chain-name step: India 0.9279, US 0.9748.
@@ -364,7 +364,7 @@ absent from eval, benefiting most from normalization work. The investigation (Pa
 ## 6. Conclusion
 
 A normalization -> multi-channel blocking -> LightGBM -> assignment pipeline reaches 0.953-0.956 corrected macro
-F0.5 on a realistic held-out split and 0.8917 on the public leaderboard. It runs end to end on a 16 GB laptop in
+F0.5 on a realistic held-out split and 0.897 on the public leaderboard. It runs end to end on a 16 GB laptop in
 about 4 hours.
 
 Three lessons:

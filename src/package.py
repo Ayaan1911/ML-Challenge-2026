@@ -94,9 +94,10 @@ def fill(text: str, variant: str, leaderboard: float | None) -> str:
     lb = leaderboard if leaderboard is not None else v["lb"]
     block = "\n".join(v["cmds"])  # the marker sits inside the README's fast-path code block
     subs = {"{{FINAL_VARIANT}}": variant, "{{FINAL_EVAL}}": f"{v['eval']:.4f}",
-            "{{FINAL_LEADERBOARD}}": f"{lb:.4f}" if lb is not None else "[fill in: final leaderboard F0.5]",
+            "{{FINAL_LEADERBOARD}}": f"{lb:.4f}".rstrip("0") if lb is not None else "[fill in: final leaderboard F0.5]",
             "{{FINAL_THRESHOLD}}": f"{v['t']:.2f}", "{{FINAL_CHAINFIX}}": "yes" if v["chainfix"] else "no",
-            "{{SUBMISSION_DATE}}": time.strftime("%Y-%m-%d"), "<!-- VARIANT COMMANDS -->": block}
+            "{{SUBMISSION_DATE}}": time.strftime("%Y-%m-%d"), "<!-- VARIANT COMMANDS -->": block,
+            "{{CHAINFIX_LEADERBOARD}}": f"{lb:.4f}".rstrip("0") if variant == "chainfix" and lb is not None else "[fill in if uploaded]"}
     for k, s in subs.items():
         text = text.replace(k, s)
     return text
