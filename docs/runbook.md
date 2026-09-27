@@ -89,8 +89,9 @@ stops a job before Claude Code's own low-memory stop does); all outputs are writ
 | `python -m src.matcher features val` | Pair, blocking and context features for the 15.9M pruned val pairs -> `data/cache/feats_val/` | 14.1 min (RA's 27 features; 3.6 min with the Pass 4 stub) | 4.0 GB |
 | `python -m src.matcher train` | LightGBM on the train side, negatives subsampled at `NEG_RATE` = 0.5 (early stopping on 10% of its records, not subsampled) -> `models/lgbm.txt`, `docs/feature_importance.md` | 5.6 min | 3.8 GB |
 | `python -m src.postprocess sweep` | Scores the eval side, sweeps t, picks it on corrected F0.5 -> `models/threshold.json`, `docs/matcher_report.md` | 4.6 min (30 s when predictions are cached) | 3.7 GB |
-| `python -m src.postprocess errors` | Up to 3,000 false positives + 3,000 false negatives at the chosen t -> `docs/errors_val.csv` (Pass 5: all 2,407 FPs) | 30 s | 3.8 GB |
-| `python -m src.run_pipeline test` | Pruned test candidates -> features -> model -> decision -> `output/matching_results.tsv`, `output/candidate_pairs.tsv`. Resumable: per-part predictions in `data/cache/pred_test/` are reused while the model, features.py and normalize.py are unchanged | ~65 min with RA's features (3 runs: France 8.5, India 1-20 28, rest 28.1; decision 0.5, writing 0.5); 33 min with the Pass 4 stub | 3.7 GB (norm records loaded 8 parts at a time, `NORM_GROUP`); 4.7 GB when a whole country was loaded |
+| `python -m src.postprocess tune` | Pass 8 decision rules on the cached eval predictions (`data/cache/pred_eval.parquet`, no rescoring): threshold t, b second chance (t2), c relative margin (t3, m), d per-S1 cap (k), every subset tuned jointly with t on corrected F0.5; a rule is adopted only if it earns >= 0.001 -> `models/decision.json`, `docs/decision_report.md` | 4.4 min (1,045 rule sets) | 3.5 GB |
+| `python -m src.postprocess errors` | Up to 3,000 false positives + 3,000 false negatives under the adopted rules (`decision.json`, else t) -> `docs/errors_val.csv` (Pass 5: all 2,407 FPs) | 30 s | 3.8 GB |
+| `python -m src.run_pipeline test` | Pruned test candidates -> features -> model -> decision (`models/decision.json` rules, else `threshold.json` t) -> `output/matching_results.tsv`, `output/candidate_pairs.tsv`. Resumable: per-part predictions in `data/cache/pred_test/` are reused while the model, features.py and normalize.py are unchanged; with every part cached it only redoes the decision and the writing (1.4 min, 3.2 GB, Pass 8) | ~65 min with RA's features (3 runs: France 8.5, India 1-20 28, rest 28.1; decision 0.5, writing 0.5); 33 min with the Pass 4 stub | 3.7 GB (norm records loaded 8 parts at a time, `NORM_GROUP`); 4.7 GB when a whole country was loaded |
 | `python utils/validate_submission.py --matching output/matching_results.tsv --candidate output/_none.tsv --test-dir dataset/test [--check-ids]` | Organizer validator on the matching file | 11 s / 25 s | 1.5 / 2.4 GB |
 | `python -m src.check_candidates [--check-ids]` | Same rules for `candidate_pairs.tsv`, streamed (see below) | 21 s / 41 s | 1.2 / 2.1 GB |
 
@@ -103,6 +104,13 @@ Memory notes: `matcher train` peaks while building the LightGBM datasets. With a
 features) that was 4.7 GB and was stopped once for low memory; `NEG_RATE` = 0.5 (4.1M rows, Pass 5) peaks at 3.8 GB.
 Subsampling shifts the predicted probabilities up, which the threshold sweep absorbs (t = 0.79 in Pass 5). The test run holds the norm records of one
 country at a time; India is the largest.
+
+Pass 8 (decision rules, `docs/decision_report.md`): on the Pass 7 eval predictions no rule reached +0.001 corrected
+F0.5. The best subset, second chance + relative (t2 0.45, t3 0.2, m 0.15, t 0.86), gained +0.0007 and cost 1.2 points
+of singleton accuracy, a risk the eval side understates (it lacks the unqueried singletons). `decision.json` therefore
+keeps t = 0.80 alone, and `run_pipeline test` from it reproduces the Pass 7 `matching_results.tsv` byte for byte.
+After a retrain: `sweep`, then `tune`, then `run_pipeline test`. `tune` rewrites `decision.json`, and a stale
+`decision.json` would override the new `threshold.json`.
 
 After merging a new `normalize.py`: `norm_cache`, then the blocking runs of section 3, then this whole section.
 After a new `features.py` only: this section from `matcher features val` onwards.

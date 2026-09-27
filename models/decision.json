@@ -1,0 +1,24 @@
+{
+ "rules": {
+  "t": 0.8
+ },
+ "adopted": "a",
+ "chosen_on": "f05_corrected",
+ "min_gain": 0.001,
+ "eval": {
+  "f05": 0.9562834780892462,
+  "f05_corrected": 0.9530636031821896,
+  "precision": 0.9972517626279859,
+  "precision_corrected": 0.9776246518125423,
+  "recall": 0.9109243455384257,
+  "singleton_accuracy": 0.9928519797606618,
+  "n_s1": 220683,
+  "n_singletons": 12451,
+  "f05[india]": 0.9244148683848209,
+  "f05_corrected[india]": 0.9209258624761372,
+  "n_s1[india]": 88340,
+  "f05[us]": 0.9775560273082374,
+  "f05_corrected[us]": 0.9745157994749489,
+  "n_s1[us]": 132343
+ }
+}

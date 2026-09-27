@@ -1,7 +1,8 @@
 """End-to-end test run: pruned test candidate parts -> features -> LightGBM -> decision layer -> submission TSVs.
 
 Needs: data/cache/cands_test/ (python -m src.blocking test), models/lgbm.txt (python -m src.matcher train),
-models/threshold.json (python -m src.postprocess sweep).
+models/threshold.json (python -m src.postprocess sweep), models/decision.json if present (python -m src.postprocess
+tune: the adopted decision rules; without it the threshold alone is used).
 Writes output/matching_results.tsv (one row per test S1, empty list = no match) and output/candidate_pairs.tsv
 (the exact pruned candidate set the model scored, grouped per S1; every matched id is also a candidate).
 Run: python -m src.run_pipeline test
@@ -21,7 +22,7 @@ import pyarrow.parquet as pq
 from src.data import CACHE, ROOT, id_key, key_id, peak_rss_mb, start_memory_guard
 from src.matcher import MODEL_PATH, iter_features, load_model, log, predict
 from src.norm_cache import norm_path
-from src.postprocess import THRESHOLD_PATH, decide
+from src.postprocess import Decider, load_rules
 
 OUT = ROOT / "output"
 PRED = CACHE / "pred_test"
@@ -64,7 +65,7 @@ def prepare_pred_dir() -> frozenset[str]:
 
 def run_test(out_dir=OUT) -> dict:
     stages, t0 = {}, time.perf_counter()
-    t = json.loads(THRESHOLD_PATH.read_text())["t"]
+    rules = load_rules()
     booster = load_model()
     done = prepare_pred_dir()
     if done:
@@ -81,7 +82,7 @@ def run_test(out_dir=OUT) -> dict:
     stages["features_and_scoring"] = {"s": round(time.perf_counter() - t0, 1), "peak_mb": round(peak_rss_mb())}
 
     t1 = time.perf_counter()
-    sel = decide(rk, prob, t)
+    sel = Decider(s1k, rk, prob)(**rules)
     s1_all = np.sort(id_key(pq.read_table(norm_path("test", "source1"), columns=["entity_id"])["entity_id"]))
     if not np.isin(np.unique(s1k), s1_all).all():
         raise SystemExit("candidate S1 ids not in test source1")
@@ -94,7 +95,7 @@ def run_test(out_dir=OUT) -> dict:
     stages["write_tsv"] = {"s": round(time.perf_counter() - t2, 1), "peak_mb": round(peak_rss_mb())}
 
     matched_s1 = np.unique(s1k[sel])
-    summary = {"threshold": t, "test_s1": len(s1_all), "candidate_pairs": len(rk), "matched_pairs": int(sel.sum()),
+    summary = {"threshold": rules["t"], "rules": {k: v for k, v in rules.items() if v is not None}, "test_s1": len(s1_all), "candidate_pairs": len(rk), "matched_pairs": int(sel.sum()),
                "s1_with_match": len(matched_s1), "s1_with_candidates": len(np.unique(s1k)),
                "records_matched": int(sel.sum()), "records_scored": len(np.unique(rk)),
                "runtime_min": round((time.perf_counter() - t0) / 60, 1), "peak_mb": round(peak_rss_mb()),
