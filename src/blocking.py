@@ -81,12 +81,16 @@ def timed(stage: str):
     _timings[stage] = _timings.get(stage, 0.0) + time.perf_counter() - t
 
 
-def load_norm(split: str, sources: tuple[str, ...], country: str | None = None) -> pd.DataFrame:
-    """Blocking columns from the normalization cache, plus the single-valued exact keys. country: one country only."""
+def load_norm(split: str, sources: tuple[str, ...], country: str | None = None,
+              ids: list[str] | None = None) -> pd.DataFrame:
+    """Blocking columns from the normalization cache, plus the single-valued exact keys. country: one country only;
+    ids: only these entity ids (Pass 8c chain-name fix)."""
     cols = ["entity_id", "country_norm", "name_core", "addr_core", "postcode", "numbers"]
     frames = []
     for s in sources:
-        flt = [("country_norm", "=", country)] if country is not None else None
+        flt = ([("country_norm", "=", country)] if country is not None else []) + \
+              ([("entity_id", "in", ids)] if ids is not None else [])
+        flt = flt or None
         df = pq.read_table(norm_path(split, s), columns=cols, filters=flt).to_pandas()
         first = np.array([n[0] if len(n) else "" for n in df.pop("numbers")], dtype=object)
         pc = df["postcode"].to_numpy(object)

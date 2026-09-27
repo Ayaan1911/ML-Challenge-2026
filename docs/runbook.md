@@ -112,5 +112,23 @@ keeps t = 0.80 alone, and `run_pipeline test` from it reproduces the Pass 7 `mat
 After a retrain: `sweep`, then `tune`, then `run_pipeline test`. `tune` rewrites `decision.json`, and a stale
 `decision.json` would override the new `threshold.json`.
 
+### Pass 8c: variants from saved predictions (`docs/pass8c_variants.md`)
+
+Every variant goes to its own folder under `output/variants/`: `matching_results.tsv`, `candidate_pairs.tsv` when
+the candidate set grows, `submission_<name>.zip` holding the matching file, plus `summary.json` and `validate.log`.
+None of these commands writes `output/matching_results.tsv` or `data/cache/pred_test/`.
+
+| Command | What it does | Time | Peak memory |
+|---|---|---|---|
+| `python -m src.variants threshold 0.85 t085` | Pass 7 predictions at a stricter t, validated in both modes and zipped | 5.5 min | 3.2 GB |
+| `python -m src.chainfix eval` | Chain-name candidate fix on the eval side: new pairs for S1 without candidates (same name_core + first house number), re-scored per affected record, corrected F0.5 before/after -> `data/cache/chainfix_eval.json` | 8.8 min | 4.3 GB |
+| `python -m src.chainfix test france` / `india` | The same rule on test -> delta predictions in `data/cache/pred_test_chainfix/<country>.parquet` | 2.6 / 6.9 min | 2.0 / 3.7 GB |
+| `python -m src.variants chainfix 0.80 chainfix` | Pass 7 predictions with the delta swapped in, plus the grown candidate file | about 7 min | 3.3 GB |
+
+Both chainfix commands abort unless (a) recomputed blocking columns of 2,000 stored pairs equal the stored ones
+and (b) about 300 untouched control records re-featurized the same way reproduce their saved probabilities
+exactly. `block_cols` hashes in-process: parallel loky workers held about 2 GB of text copies. Those copies are
+invisible to the per-process memory guard, which once left orphaned workers behind after it stopped a run.
+
 After merging a new `normalize.py`: `norm_cache`, then the blocking runs of section 3, then this whole section.
 After a new `features.py` only: this section from `matcher features val` onwards.
