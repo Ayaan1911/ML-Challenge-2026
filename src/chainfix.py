@@ -81,6 +81,7 @@ def block_cols(split: str, country: str, pairs: pd.DataFrame) -> pd.DataFrame:
         r, s = index.lookup(keys, labels)
         out[f] = np.isin(want, r.astype(np.int64) * n1 + s).astype(np.int8)
         del index
+    s1, rec = s1[["name_core", "addr_core"]], rec[["name_core", "addr_core"]]  # memory: keys no longer needed
     cfg = {**cfg, "threads": 1}  # hash in-process: 6 loky workers held ~2 GB of text copies next to this process
     with Parallel(n_jobs=1) as par:
         for col, texts_s1, texts_rec, prefix in (
@@ -165,6 +166,7 @@ def run_eval() -> None:
     t0 = time.perf_counter()
     b_ids = (SPLITS / "valsplit_B_s1_ids.txt").read_text(encoding="utf-8").split()
     truth = load_truth()
+    truth = {s: truth[s] for s in b_ids}  # memory: only half-B S1 are scored or targeted
     s1c = pq.read_table(norm_path("train", "source1"), columns=["entity_id", "country_norm"],
                         filters=[("entity_id", "in", b_ids)]).to_pandas().set_index("entity_id")["country_norm"]
     pe = pd.read_parquet(PRED_EVAL, columns=["s1_id", "cand_id", "country", "query_group"])
@@ -194,6 +196,7 @@ def run_eval() -> None:
         log(f"{country}: {json.dumps(stats[country])}")
         del todo[country][1][:], blk, df
     delta = pd.concat(deltas, ignore_index=True)
+    delta.to_parquet(CACHE / "pred_eval_chainfix_delta.parquet")  # Pass 10: eval rows under the chainfix decision
     pe = pd.read_parquet(PRED_EVAL)
     check_controls(pd.concat(controls, ignore_index=True).assign(is_control=True),
                    pd.Series(pe["prob"].to_numpy(), index=pd.MultiIndex.from_arrays(
@@ -202,7 +205,7 @@ def run_eval() -> None:
     for name in ("pass7", "chainfix"):
         if name == "chainfix":
             pe = pd.concat([pe[~pe["cand_id"].isin(set(delta["cand_id"]))], delta], ignore_index=True)
-        ev = Eval(pe, b_ids, {s: truth[s] for s in b_ids}, s1c)
+        ev = Eval(pe, b_ids, truth, s1c)
         res[name] = {str(t): {k: v for k, v in ev.score(t).items()
                               if k.startswith("f05") or k in ("precision_corrected", "recall", "singleton_accuracy")}
                      for t in (0.80, 0.85, 0.90)}
