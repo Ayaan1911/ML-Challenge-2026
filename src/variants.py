@@ -90,16 +90,24 @@ def validate(folder, candidates, log_path=None) -> dict:
     return res
 
 
-def write_variant(name: str, t: float, delta: pd.DataFrame | None = None) -> dict:
+def write_variant(name: str, t: float, delta: pd.DataFrame | list | None = None) -> dict:
+    """delta: one delta or a list applied in order (chainfix2 = chainfix delta, then the chainfix2 delta). With a list,
+    change counts are also reported against the variant built from all but the last delta at PASS7_T."""
     t0 = time.perf_counter()
     folder = VARIANTS / name
     folder.mkdir(parents=True, exist_ok=True)
+    deltas = [] if delta is None else (delta if isinstance(delta, list) else [delta])
     s1k, rk, prob = load_pass7()
     old_sel = decide(rk, prob, PASS7_T)
     old = pd.Series(s1k[old_sel], index=rk[old_sel])
     del old_sel
-    if delta is not None:
-        s1k, rk, prob = with_delta(s1k, rk, prob, delta)
+    base = None
+    for i, d in enumerate(deltas):
+        s1k, rk, prob = with_delta(s1k, rk, prob, d)
+        if i == len(deltas) - 2:
+            b_sel = decide(rk, prob, PASS7_T)
+            base = pd.Series(s1k[b_sel], index=rk[b_sel])
+            del b_sel
     sel = decide(rk, prob, t)
     new = pd.Series(s1k[sel], index=rk[sel])
     s1_all, country = s1_country()
@@ -107,18 +115,20 @@ def write_variant(name: str, t: float, delta: pd.DataFrame | None = None) -> dic
         raise SystemExit("candidate S1 ids not in test source1")
     write_grouped(folder / "matching_results.tsv", ["source1_entity_id", "matched_entity_ids"], s1_all, s1k[sel], rk[sel])
     candidates = PASS7_CANDIDATES
-    if delta is not None:  # the candidate set grew: write the variant's own candidate file
+    if deltas:  # the candidate set grew: write the variant's own candidate file
         candidates = folder / "candidate_pairs.tsv"
         write_grouped(candidates, ["source1_entity_id", "candidate_entity_ids"], s1_all, s1k, rk)
     del s1k, rk, prob, sel
     counts = change_counts(old, new, s1_all, country)
+    counts_base = change_counts(base, new, s1_all, country) if base is not None else None
     log(f"{name}: {json.dumps(counts)}")
     res = validate(folder, candidates)
     zpath = folder / f"submission_{name}.zip"
     with zipfile.ZipFile(zpath.with_suffix(".tmp"), "w", zipfile.ZIP_DEFLATED) as z:
         z.write(folder / "matching_results.tsv", "matching_results.tsv")
     zpath.with_suffix(".tmp").replace(zpath)
-    summary = {"variant": name, "threshold": t, "chainfix": delta is not None, "changes_vs_pass7": counts,
+    summary = {"variant": name, "threshold": t, "chainfix": bool(deltas), "changes_vs_pass7": counts,
+               "changes_vs_previous_variant": counts_base,
                "matched_pairs": int(len(new)), "validation": res, "candidate_file": str(candidates.relative_to(ROOT)),
                "zip": str(zpath.relative_to(ROOT)), "zip_mb": round(zpath.stat().st_size / 2**20, 1),
                "runtime_min": round((time.perf_counter() - t0) / 60, 1), "peak_mb": round(peak_rss_mb())}
@@ -129,18 +139,21 @@ def write_variant(name: str, t: float, delta: pd.DataFrame | None = None) -> dic
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("kind", choices=["threshold", "chainfix"])
+    ap.add_argument("kind", choices=["threshold", "chainfix", "chainfix2"])
     ap.add_argument("t", type=float)
     ap.add_argument("name")
     args = ap.parse_args()
     start_memory_guard()
     delta = None
-    if args.kind == "chainfix":
-        parts = sorted(CHAINFIX_DELTA.glob("*.parquet"))
-        if not parts:
-            raise SystemExit(f"no delta predictions in {CHAINFIX_DELTA}; run python -m src.chainfix test first")
-        delta = pd.concat([pd.read_parquet(p, columns=["s1", "rec", "prob"]) for p in parts], ignore_index=True)
-        log(f"chainfix delta: {len(delta):,} rows from {[p.stem for p in parts]}")
+    if args.kind in ("chainfix", "chainfix2"):
+        dirs = [CHAINFIX_DELTA] + ([CACHE / "pred_test_chainfix2"] if args.kind == "chainfix2" else [])
+        delta = []
+        for d in dirs:
+            parts = sorted(d.glob("*.parquet"))
+            if not parts:
+                raise SystemExit(f"no delta predictions in {d}")
+            delta.append(pd.concat([pd.read_parquet(p, columns=["s1", "rec", "prob"]) for p in parts], ignore_index=True))
+            log(f"{d.name}: {len(delta[-1]):,} rows from {[p.stem for p in parts]}")
     write_variant(args.name, args.t, delta)
 
 

@@ -107,11 +107,15 @@ def check_block_cols(kind: str, country: str, paths: list) -> None:
     log(f"{country}: blocking columns of 2,000 stored pairs reproduced (max cosine error {err:.1e})")
 
 
-def rescore(kind: str, country: str, new: pd.DataFrame, controls: int = 300) -> pd.DataFrame:
+def rescore(kind: str, country: str, new: pd.DataFrame, controls: int = 300, s1_context: bool = False) -> pd.DataFrame:
     """All rows of the records in `new` (stored + new) re-featurized and scored, plus control records.
-    new: blocking columns + meta of the new pairs. Returns rows with prob and an is_control flag."""
+    new: blocking columns + meta of the new pairs. Returns rows with prob and an is_control flag.
+    s1_context=True (Pass 11): new pairs may point at S1 that already have rows, which changes those S1's context
+    features, so every record with a row at such an S1 is re-scored too (and never used as a control)."""
     paths = [p for p in part_paths(kind) if part_country(p) == country]
     affected = np.unique(id_key(new["cand_id"].to_numpy(object)))
+    touched = np.unique(id_key(new["s1_id"].to_numpy(object))) if s1_context else np.empty(0, np.int64)
+    ctx_recs = []
     s1s, scores, weights, rows, pos, off = [], [], [], [], [], 0
     ctrl_pool = []
     for p in paths:  # one light pass: S1 context inputs of the whole country + the affected records' rows
@@ -120,9 +124,11 @@ def rescore(kind: str, country: str, new: pd.DataFrame, controls: int = 300) -> 
         s1s.append(id_key(df["s1_id"].to_numpy(object)))
         scores.append(df["prune_score"].to_numpy(np.float32))
         weights.append(df["weight"].to_numpy(np.float32))
-        pool = rk[~np.isin(rk, affected) & ((df["side"] == "eval").to_numpy() if "side" in df else True)]
+        hit = np.unique(rk[np.isin(s1s[-1], touched)]) if len(touched) else np.empty(0, np.int64)
+        ctx_recs.append(hit)
+        pool = rk[~np.isin(rk, affected) & ~np.isin(rk, hit) & ((df["side"] == "eval").to_numpy() if "side" in df else True)]
         ctrl_pool.append(rng.choice(np.unique(pool), controls // len(paths) + 1, replace=False))  # saved preds: eval side
-        m = np.isin(rk, np.r_[affected, ctrl_pool[-1]])
+        m = np.isin(rk, np.r_[affected, hit, ctrl_pool[-1]])
         rows.append(df[m])
         pos.append(off + np.flatnonzero(m))
         off += len(df)
@@ -141,7 +147,7 @@ def rescore(kind: str, country: str, new: pd.DataFrame, controls: int = 300) -> 
     s1k, rk = id_key(df["s1_id"].to_numpy(object)), id_key(df["cand_id"].to_numpy(object))
     f = featurize(df, NormTable(SPLIT[kind], ("source1",), s1k), NormTable(SPLIT[kind], ("source2", "source3"), rk), ctx)
     df["prob"] = predict(load_model(), f)
-    df["is_control"] = ~np.isin(rk, affected)
+    df["is_control"] = ~np.isin(rk, np.concatenate([affected, *ctx_recs]))
     df["is_new"] = np.r_[np.zeros(len(df) - len(new), bool), np.ones(len(new), bool)]
     log(f"{country}: re-scored {len(df):,} rows ({len(new):,} new pairs, {len(affected):,} records, "
         f"{int(df['is_control'].sum()):,} control rows)")
