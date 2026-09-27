@@ -9,3 +9,4 @@ logs/
 
 # Pass 4 regenerable split lists and models over 50 MB
 data/splits/valsplit_*_records.txt
+dist/

@@ -1,9 +1,24 @@
+# Exact versions of the development environment (Python 3.11.1, Windows 11). Direct dependencies first.
 pandas==3.0.6
 pyarrow==25.0.1
 numpy==2.4.6
 rapidfuzz==3.14.6
 scikit-learn==1.9.1
 lightgbm==4.7.0
-pytest==9.1.1
 sparse_dot_topn==1.2.0
 anyascii==0.3.3
+pytest==9.1.1
+# transitive
+scipy==1.17.1
+joblib==1.6.0
+threadpoolctl==3.7.0
+narwhals==2.26.0
+python-dateutil==2.9.0.post0
+six==1.17.0
+tzdata==2026.4
+cloudpickle==3.1.2
+packaging==26.3
+pluggy==1.6.0
+iniconfig==2.3.0
+Pygments==2.21.0
+colorama==0.4.6

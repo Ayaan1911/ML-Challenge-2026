@@ -38,6 +38,7 @@ RANK_SCORES = SCORES + ["prune_score", "name_token_set", "addr_token_set"]
 CONTEXT_COLS = (["rec_n_cands"] + [f"rec_rank_{c}" for c in RANK_SCORES] + [f"rec_gap_{c}" for c in RANK_SCORES]
                 + ["s1_n_cands", "s1_rank", "is_s3"])
 MODEL_FEATURES = FEATURE_NAMES + BLOCK_COLS + CONTEXT_COLS
+CTX_S1 = ["s1_n_cands", "s1_rank"]
 META_COLS = ["s1_id", "cand_id", "country", "label", "weight", "query_group", "side"]
 PARAMS = {"objective": "binary", "num_leaves": 63, "learning_rate": 0.05, "min_data_in_leaf": 100,
           "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 1, "lambda_l2": 1.0,
@@ -178,7 +179,10 @@ def iter_features(kind: str, skip: frozenset[str] = frozenset()):
         if all(p.name in skip for p in cps):
             log(f"{kind} {country}: all {len(cps)} parts already done, skipped")
             continue
-        ctx = dict(zip(cps, s1_context(kind, cps)))  # per country: an S1 only has candidates of its country
+        # S1 context needs every pair pointing at an S1. A slice of the candidate set (the package smoke test)
+        # carries it precomputed on the full set, as columns s1_n_cands / s1_rank on the pruned rows.
+        pre = all(set(CTX_S1) <= set(pq.read_schema(p).names) for p in cps)
+        ctx = {} if pre else dict(zip(cps, s1_context(kind, cps)))  # per country: an S1 only has candidates of its country
         log(f"{kind} {country}: S1 context for {len(cps)} parts")
         todo = [p for p in cps if p.name not in skip]
         for g in range(0, len(todo), NORM_GROUP):  # norm records for a group of parts at a time (memory)
@@ -194,7 +198,7 @@ def iter_features(kind: str, skip: frozenset[str] = frozenset()):
                 f"({len(s1_norm.keys):,} S1, {len(rec_norm.keys):,} records)")
             for p in group:
                 df = read_part(kind, p)
-                yield p, df, featurize(df, s1_norm, rec_norm, ctx.pop(p))
+                yield p, df, featurize(df, s1_norm, rec_norm, df[CTX_S1].reset_index(drop=True) if pre else ctx.pop(p))
             del s1_norm, rec_norm
 
 

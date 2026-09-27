@@ -69,9 +69,10 @@ def change_counts(old: pd.Series, new: pd.Series, s1_all: np.ndarray, country: n
     return out
 
 
-def validate(folder, candidates) -> dict:
+def validate(folder, candidates, log_path=None) -> dict:
     """Organizer validator with and without --check-ids (matching file), check_candidates in both modes."""
     m, res, lines = folder / "matching_results.tsv", {}, []
+    log_path = log_path or folder / "validate.log"
     runs = {"validator": [sys.executable, "-c", VALIDATOR, "--matching", str(m), "--candidate",
                           str(folder / "_no_candidate_file.tsv"), "--test-dir", "dataset/test"],
             "check_candidates": [sys.executable, "-m", "src.check_candidates", "--matching", str(m),
@@ -82,10 +83,10 @@ def validate(folder, candidates) -> dict:
             ok = p.returncode == 0 and "PASS" in p.stdout
             res[f"{name}{' --check-ids' if extra else ''}"] = "PASS" if ok else f"FAIL (exit {p.returncode})"
             lines += [f"=== {name} {' '.join(extra)} -> exit {p.returncode}", p.stdout, p.stderr]
-    (folder / "validate.log").write_text("\n".join(lines), encoding="utf-8")
+    log_path.write_text("\n".join(lines), encoding="utf-8")
     log(f"validation: {res}")
     if any(v != "PASS" for v in res.values()):
-        raise SystemExit(f"{folder.name}: validation failed, see {folder / 'validate.log'}")
+        raise SystemExit(f"{folder.name}: validation failed, see {log_path}")
     return res
 
 
