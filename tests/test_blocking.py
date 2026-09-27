@@ -69,8 +69,7 @@ def test_pass7_channel_keys():
     k, lab = anchor_keys(df)
     assert sorted(zip(k.tolist(), lab.tolist())) == [("n|12|urb", 0), ("n|7|ab", 1), ("z|62704|urb", 0)]
     k, lab = skip_bigram_keys(df)
-    assert sorted(zip(k.tolist(), lab.tolist())) == [("sharma traders", 2), ("urban grill", 0), ("urban house", 0),
-                                                     ("grill house", 0)][:0] + sorted(
+    assert sorted(zip(k.tolist(), lab.tolist())) == sorted(
         [("urban grill", 0), ("urban house", 0), ("grill house", 0), ("sharma traders", 2)])
     hits = pd.DataFrame({"key_name_nospace": [1, 0, 0], "key_sorted_tokens": [0, 0, 0], "key_postcode_num": [0, 0, 0],
                          "key_postcode": [0, 0, 0], "key_word_postcode": [0, 0, 0], "key_anchor": [0, 1, 0],

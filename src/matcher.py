@@ -199,10 +199,16 @@ def iter_features(kind: str, skip: frozenset[str] = frozenset()):
 
 
 def build_val_features() -> None:
+    """Resumable: a part whose feature file is newer than its val part and than the code that produced it is kept."""
     out = CACHE / "feats_val"
     out.mkdir(parents=True, exist_ok=True)
+    code = max((ROOT / "src" / f).stat().st_mtime for f in ("features.py", "normalize.py", "matcher.py"))
+    done = frozenset(p.name for p in part_paths("val")
+                     if (out / p.name).exists() and (out / p.name).stat().st_mtime > max(p.stat().st_mtime, code))
+    if done:
+        log(f"resuming: {len(done)} feature parts already built")
     t0 = time.perf_counter()
-    for p, df, f in iter_features("val"):
+    for p, df, f in iter_features("val", skip=done):
         t = pa.Table.from_pandas(pd.concat([df[META_COLS].reset_index(drop=True), f], axis=1), preserve_index=False)
         pq.write_table(t, out / f"{p.stem}.tmp")
         (out / f"{p.stem}.tmp").replace(out / f"{p.stem}.parquet")
